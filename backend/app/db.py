@@ -1,6 +1,11 @@
 """SQLite access. Kept deliberately thin: the plan leaves the future store
 (local SQLite vs Supabase Postgres) as an open decision, so all SQL lives
-here and nowhere else."""
+here and nowhere else.
+
+The `drafts` table doubles as the lead queue: a run inserts qualified leads
+with status 'pending' and no draft text; a draft is generated later, only
+when explicitly requested, flipping the row to 'new' (then reviewed/sent).
+"""
 
 import sqlite3
 from datetime import UTC, datetime
@@ -64,8 +69,10 @@ CREATE TABLE IF NOT EXISTS drafts (
     contact_value TEXT,
     yoe_required INTEGER,
     classification TEXT,
-    draft_text TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'reviewed', 'sent', 'skipped')),
+    post_text TEXT NOT NULL DEFAULT '',
+    draft_text TEXT,
+    drafted_at TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'new', 'reviewed', 'sent', 'skipped')),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -84,9 +91,56 @@ def init_db(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         conn.executescript(_SCHEMA)
+        _migrate_drafts(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate_drafts(conn: sqlite3.Connection) -> None:
+    """In-place upgrade of pre-queue drafts tables: add post_text/drafted_at,
+    widen draft_text to nullable, and allow the 'pending' status. Preserves
+    existing rows (they already carry draft_text, so they keep their
+    status)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(drafts)")}
+    if not cols or "post_text" in cols:
+        return
+    conn.executescript("""
+        CREATE TABLE drafts_migrated (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            keyword TEXT NOT NULL,
+            company TEXT,
+            role TEXT,
+            author_name TEXT,
+            author_headline TEXT,
+            author_profile_url TEXT,
+            post_url TEXT,
+            contact_method TEXT NOT NULL CHECK (contact_method IN ('email', 'dm')),
+            contact_value TEXT,
+            yoe_required INTEGER,
+            classification TEXT,
+            post_text TEXT NOT NULL DEFAULT '',
+            draft_text TEXT,
+            drafted_at TEXT,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'new', 'reviewed', 'sent', 'skipped')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO drafts_migrated
+            (id, post_id, run_id, keyword, company, role, author_name,
+             author_headline, author_profile_url, post_url, contact_method,
+             contact_value, yoe_required, classification, post_text,
+             draft_text, drafted_at, status, created_at, updated_at)
+        SELECT id, post_id, run_id, keyword, company, role, author_name,
+               author_headline, author_profile_url, post_url, contact_method,
+               contact_value, yoe_required, classification, '',
+               draft_text, NULL, status, created_at, updated_at
+        FROM drafts;
+        DROP TABLE drafts;
+        ALTER TABLE drafts_migrated RENAME TO drafts;
+    """)
 
 
 def utcnow() -> str:
@@ -272,22 +326,48 @@ def purge_processed_posts(conn: sqlite3.Connection) -> int:
 
 
 def insert_draft(conn: sqlite3.Connection, data: dict) -> int:
+    """Insert a queue row. With no draft_text the row is a pending lead
+    awaiting an on-demand draft; with draft_text it is a finished draft
+    (status must say so)."""
     cur = conn.execute(
         """
         INSERT INTO drafts
             (post_id, run_id, keyword, company, role, author_name,
              author_headline, author_profile_url, post_url, contact_method,
-             contact_value, yoe_required, classification, draft_text,
-             status, created_at, updated_at)
+             contact_value, yoe_required, classification, post_text,
+             draft_text, drafted_at, status, created_at, updated_at)
         VALUES (:post_id, :run_id, :keyword, :company, :role, :author_name,
                 :author_headline, :author_profile_url, :post_url,
                 :contact_method, :contact_value, :yoe_required,
-                :classification, :draft_text, :status, :created_at, :updated_at)
+                :classification, :post_text, :draft_text, :drafted_at,
+                :status, :created_at, :updated_at)
         """,
-        {**data, "status": "new"},
+        data,
     )
     conn.commit()
     return int(cur.lastrowid)
+
+
+def save_generated_draft(
+    conn: sqlite3.Connection, draft_id: int, draft_text: str
+) -> None:
+    """Fill in a pending row's draft on explicit request -> status 'new'."""
+    now = utcnow()
+    conn.execute(
+        """
+        UPDATE drafts
+        SET draft_text = ?, status = 'new', drafted_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'pending'
+        """,
+        (draft_text, now, now, draft_id),
+    )
+    conn.commit()
+
+
+def list_pending_drafts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM drafts WHERE status = 'pending' ORDER BY id ASC"
+    ).fetchall()
 
 
 def list_drafts(
@@ -309,7 +389,7 @@ def get_draft(conn: sqlite3.Connection, draft_id: int) -> sqlite3.Row | None:
 def update_draft_status(
     conn: sqlite3.Connection, draft_id: int, status: str
 ) -> None:
-    if status not in ("new", "reviewed", "sent", "skipped"):
+    if status not in ("pending", "new", "reviewed", "sent", "skipped"):
         raise ValueError(f"Invalid status: {status}")
     conn.execute(
         "UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?",
@@ -322,6 +402,15 @@ def count_drafts_created_on(conn: sqlite3.Connection, day_utc: str) -> int:
     """day_utc is a date string like 2026-09-11 (UTC)."""
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM drafts WHERE substr(created_at, 1, 10) = ?",
+        (day_utc,),
+    ).fetchone()
+    return int(row["n"])
+
+
+def count_drafts_generated_on(conn: sqlite3.Connection, day_utc: str) -> int:
+    """Drafts actually generated on a day (drafted_at set), for the cap."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM drafts WHERE substr(drafted_at, 1, 10) = ?",
         (day_utc,),
     ).fetchone()
     return int(row["n"])

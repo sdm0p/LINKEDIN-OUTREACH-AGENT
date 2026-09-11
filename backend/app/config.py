@@ -13,9 +13,10 @@ class Settings(BaseSettings):
     )
 
     gemini_api_key: str | None = None
-    # gemini-2.5-flash: separate quota bucket from gemini-3.5-flash (whose
-    # free-tier RPD was exhausted). Swap freely via GEMINI_MODEL in .env.
-    gemini_model: str = "gemini-2.5-flash"
+    # gemini-3.1-flash-lite: Flash-Lite models carry the highest Gemini
+    # free-tier limits (~15 RPM / ~1000+ RPD vs ~250 RPD for 2.5-flash).
+    # Rate limits are per model — swap freely via GEMINI_MODEL in .env.
+    gemini_model: str = "gemini-3.1-flash-lite"
 
     # Runtime data (SQLite db, uploaded resume). Local-only by design.
     data_dir: Path = BASE_DIR / "data"

@@ -73,11 +73,18 @@ DM) for review. Nothing sends automatically — I review and send myself.
      name/company to resolve a profile for a DM instead of dropping the
      lead.
 
-8. **Draft generation**
-   - Email found -> draft a personalized outreach email.
-   - No email -> draft a LinkedIn DM, tagged with the poster's profile URL.
-   - Drafts carry a status: new / reviewed / sent / skipped, persisted so
-     re-viewing the queue doesn't resurface already-handled items.
+8. **Draft generation (on demand)**
+   - Runs do NOT draft. A run qualifies posts into pending leads
+     (dedup -> YoE filter -> classification -> contact resolution).
+   - Drafts are generated only when explicitly requested, per lead
+     ("Generate draft") or in bulk ("Generate all"), from the Review
+     queue. The daily cap applies at draft time.
+   - Orchestration is LangGraph: a checkpointed run graph (one execution
+     per keyword batch, live per-batch trace) and a checkpointed draft
+     graph whose interrupt() gate is passed only by the explicit request.
+   - Drafts carry a status: pending / new / reviewed / sent / skipped,
+     persisted so re-viewing the queue doesn't resurface already-handled
+     items.
 
 9. **Output**
    - Consolidated list: role, company, poster's LinkedIn profile, contact

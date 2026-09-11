@@ -1,14 +1,16 @@
-"""Review-queue service: turns kept posts into drafts.
+"""Review-queue service: qualify posts into leads, draft on demand.
 
-Pipeline stages 5-8 live here as one ingest flow the run orchestrator
-calls per keyword batch:
+Two distinct phases, deliberately separated:
 
+Qualify (inside the LangGraph run graph, per keyword batch):
   dedup -> YoE filter -> extraction/classification -> (email | DM fallback)
-  -> daily-cap check -> draft generation -> queue insert
+  -> insert as a PENDING lead. No draft is generated here, ever.
 
-Nothing sends. The daily cap stops processing entirely when reached so
-un-processed posts stay unprocessed for a later run rather than being
-silently burned.
+Draft (on explicit request from the Review queue, via the draft graph):
+  daily-cap check -> LLM draft -> row flips pending -> new.
+
+Nothing sends. The daily cap applies at draft time, so browsing and
+qualifying leads never burns the cap — only real drafts do.
 """
 
 from datetime import UTC, datetime
@@ -16,10 +18,11 @@ from datetime import UTC, datetime
 from ..config import settings
 from ..db import (
     connect,
-    count_drafts_created_on,
+    count_drafts_generated_on,
     get_db_path,
     insert_draft,
     record_processed_posts,
+    save_generated_draft,
     seen_post_ids,
 )
 from ..llm import LLMError, get_llm_provider
@@ -38,11 +41,19 @@ def _today() -> str:
     return datetime.now(UTC).date().isoformat()
 
 
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+# ---------- phase 1: qualify (called by the run graph, per batch) ----------
+
+
 async def ingest_posts(posts: list[Post], keyword: str, run_id: str, trace) -> dict:
-    """Run stages 5-8 over one keyword's posts. Returns counts for the trace."""
+    """Qualify one keyword's posts into pending leads. Returns counts for
+    the trace. No LLM drafting happens here."""
     provider = get_llm_provider()
-    counts = {"dedup_skipped": 0, "yoe_dropped": 0, "noise": 0, "no_contact": 0,
-              "capped": 0, "drafts": 0, "errors": 0}
+    counts = {"dedup_skipped": 0, "yoe_dropped": 0, "noise": 0,
+              "no_contact": 0, "leads": 0, "errors": 0}
 
     async with _db_lock:
         resume_service._ensure_db()
@@ -81,7 +92,7 @@ async def ingest_posts(posts: list[Post], keyword: str, run_id: str, trace) -> d
             try:
                 classification = await extraction.classify_post(post, provider)
             except LLMError as exc:
-                # One post's failure must not sink the run. Not marked
+                # One post's failure must not sink the batch. Not marked
                 # processed, so a later run can classify it again.
                 counts["errors"] += 1
                 trace.log(
@@ -116,41 +127,7 @@ async def ingest_posts(posts: list[Post], keyword: str, run_id: str, trace) -> d
                     processed.append(_processed_row(post, keyword, run_id, company))
                     continue
 
-            # --- daily cap ---
-            conn = _conn()
-            try:
-                drafted_today = count_drafts_created_on(conn, _today())
-            finally:
-                conn.close()
-            if drafted_today >= settings.max_drafts_per_day:
-                counts["capped"] += 1
-                trace.log(
-                    "draft",
-                    f"Daily cap reached ({settings.max_drafts_per_day}) — "
-                    f"remaining posts left for a later run",
-                )
-                break
-
-            # --- draft generation ---
-            try:
-                draft = await draft_generation.generate_draft(
-                    post,
-                    contact_method=contact_method,
-                    company=company,
-                    role=role,
-                    state=state,
-                    provider=provider,
-                )
-            except LLMError as exc:
-                # Left unprocessed so a later run can retry the draft.
-                counts["errors"] += 1
-                trace.log(
-                    "draft",
-                    f"Draft generation failed for {post.author_name or 'unknown'} — "
-                    f"will retry on a later run ({str(exc)[:120]})",
-                )
-                continue
-            now = datetime.now(UTC).isoformat(timespec="seconds")
+            # --- queue as a pending lead (draft generated on demand) ---
             conn = _conn()
             try:
                 insert_draft(
@@ -169,22 +146,21 @@ async def ingest_posts(posts: list[Post], keyword: str, run_id: str, trace) -> d
                         "contact_value": contact_value,
                         "yoe_required": required,
                         "classification": verdict,
-                        "draft_text": (
-                            f"Subject: {draft['subject']}\n\n{draft['body']}"
-                            if contact_method == "email" and draft["subject"]
-                            else draft["body"]
-                        ),
-                        "created_at": now,
-                        "updated_at": now,
+                        "post_text": post.text,
+                        "draft_text": None,
+                        "drafted_at": None,
+                        "status": "pending",
+                        "created_at": _now(),
+                        "updated_at": _now(),
                     },
                 )
             finally:
                 conn.close()
-            counts["drafts"] += 1
+            counts["leads"] += 1
             trace.log(
-                "draft",
-                f"Draft #{drafted_today + 1} ({contact_method}) for "
-                f"{role or 'role'} @ {company or post.author_name or 'unknown'}",
+                "queue",
+                f"Lead queued: {role or 'role'} @ {company or post.author_name or 'unknown'} "
+                f"({contact_method}) — draft on demand",
             )
             processed.append(_processed_row(post, keyword, run_id, company))
 
@@ -230,6 +206,120 @@ async def _search_people_safe(query: str, trace) -> list[dict]:
     except SearchError as exc:
         trace.log("extraction", f"People search failed: {exc}")
         return []
+
+
+# ---------- phase 2: draft (on demand, via the draft graph) ----------
+
+
+async def generate_draft_for_row(row, resume_state) -> dict:
+    """Generate and store one pending lead's draft. Called by the draft
+    graph's generate node after the approval interrupt — no other code
+    path drafts. Raises ValueError when the daily cap is reached (checked
+    before the LLM call so browsing never burns quota)."""
+    drafted_today = 0
+    async with _db_lock:
+        resume_service._ensure_db()
+        conn = _conn()
+        try:
+            drafted_today = count_drafts_generated_on(conn, _today())
+        finally:
+            conn.close()
+    if drafted_today >= settings.max_drafts_per_day:
+        raise ValueError(
+            f"Daily draft cap reached ({settings.max_drafts_per_day}) — "
+            "generate more drafts tomorrow."
+        )
+
+    provider = get_llm_provider()
+    post = Post(
+        post_id=row["post_id"],
+        text=row["post_text"] or "",
+        post_url=row["post_url"] or "",
+        author_name=row["author_name"] or "",
+        author_headline=row["author_headline"] or "",
+        author_profile_url=row["author_profile_url"] or "",
+    )
+    draft = await draft_generation.generate_draft(
+        post,
+        contact_method=row["contact_method"],
+        company=row["company"] or "",
+        role=row["role"] or "",
+        state=resume_state,
+        provider=provider,
+    )
+    text = (
+        f"Subject: {draft['subject']}\n\n{draft['body']}"
+        if row["contact_method"] == "email" and draft["subject"]
+        else draft["body"]
+    )
+
+    async with _db_lock:
+        resume_service._ensure_db()
+        conn = _conn()
+        try:
+            save_generated_draft(conn, row["id"], text)
+        finally:
+            conn.close()
+    return {"draft_id": row["id"], "contact_method": row["contact_method"]}
+
+
+async def generate_lead_draft(lead_id: int) -> dict:
+    """The explicit human 'ask': run the checkpointed draft graph for one
+    lead. The graph interrupts at its approval gate; this resumes it with
+    Command(resume=True) — the click that got us here."""
+    from langgraph.types import Command
+
+    from ..graphs import build_draft_graph, saver_session
+
+    config = {"configurable": {"thread_id": f"draft-{lead_id}"}}
+    async with saver_session() as checkpointer:
+        graph = await build_draft_graph(checkpointer)
+        # First invoke runs to the approval gate and stops (interrupt).
+        await graph.ainvoke({"lead_id": lead_id}, config=config)
+        # The user's request IS the approval: resume through the gate.
+        out = await graph.ainvoke(Command(resume=True), config=config)
+    if not out.get("drafted"):
+        raise ValueError("Draft generation was not approved.")
+    return out.get("counts") or {}
+
+
+async def generate_all_pending() -> dict:
+    """Draft every pending lead (subject to the daily cap). Stops early
+    with 'capped' when the cap is hit; per-lead LLM failures are counted
+    and skipped, not fatal."""
+    rows = await list_pending()
+    generated = failed = 0
+    capped = 0
+    for row in rows:
+        try:
+            await generate_lead_draft(row["id"])
+            generated += 1
+        except ValueError as exc:
+            if "cap" in str(exc).lower():
+                capped = len(rows) - generated - failed
+                break
+            failed += 1
+        except LLMError:
+            failed += 1
+    return {"generated": generated, "failed": failed, "capped": capped}
+
+
+async def count_pending() -> int:
+    rows = await list_pending()
+    return len(rows)
+
+
+async def list_pending() -> list[dict]:
+    """Pending lead rows, oldest first."""
+    from ..db import list_pending_drafts
+
+    async with _db_lock:
+        resume_service._ensure_db()
+        conn = _conn()
+        try:
+            return [dict(r) for r in list_pending_drafts(conn)]
+        finally:
+            conn.close()
 
 
 # ---------- queue API support ----------

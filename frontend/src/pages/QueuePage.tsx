@@ -24,17 +24,20 @@ export interface Draft {
   contact_value: string | null;
   yoe_required: number | null;
   classification: string;
-  draft_text: string;
-  status: "new" | "reviewed" | "sent" | "skipped";
+  post_text: string;
+  draft_text: string | null;
+  drafted_at: string | null;
+  status: "pending" | "new" | "reviewed" | "sent" | "skipped";
   created_at: string;
   updated_at: string;
 }
 
 type SortKey = "company" | "role" | "yoe_required" | "status" | "created_at";
 
-const STATUS_FILTERS = ["all", "new", "reviewed", "sent", "skipped"] as const;
+const STATUS_FILTERS = ["all", "pending", "new", "reviewed", "sent", "skipped"] as const;
 
 function statusBadgeClass(status: Draft["status"]): string {
+  if (status === "pending") return "badge muted";
   if (status === "new") return "badge accent";
   if (status === "sent") return "badge filled";
   return "badge";
@@ -48,6 +51,8 @@ export default function QueuePage() {
   const [sortAsc, setSortAsc] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [confirmSendId, setConfirmSendId] = useState<number | null>(null);
+  const [generatingIds, setGeneratingIds] = useState<number[]>([]);
+  const [generatingAll, setGeneratingAll] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -83,6 +88,41 @@ export default function QueuePage() {
     [toast],
   );
 
+  const generate = useCallback(
+    async (id: number) => {
+      setGeneratingIds((prev) => [...prev, id]);
+      try {
+        await api(`/api/queue/${id}/generate`, { method: "POST" });
+        toast("Draft generated — review it below");
+        await refresh();
+      } catch (err) {
+        toast(err instanceof ApiError ? err.message : "Draft generation failed", "error");
+      } finally {
+        setGeneratingIds((prev) => prev.filter((x) => x !== id));
+      }
+    },
+    [toast, refresh],
+  );
+
+  const generateAll = useCallback(async () => {
+    setGeneratingAll(true);
+    try {
+      const res = await api<{ generated: number; failed: number; capped: number }>(
+        "/api/queue/generate-all",
+        { method: "POST" },
+      );
+      const bits = [`${res.generated} drafted`];
+      if (res.capped) bits.push(`${res.capped} left for tomorrow (daily cap)`);
+      if (res.failed) bits.push(`${res.failed} failed`);
+      toast(bits.join(" · "), res.failed ? "error" : "success");
+      await refresh();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : "Generate-all failed", "error");
+    } finally {
+      setGeneratingAll(false);
+    }
+  }, [toast, refresh]);
+
   const visible = useMemo(() => {
     let rows = drafts ?? [];
     if (filter !== "all") rows = rows.filter((d) => d.status === filter);
@@ -108,6 +148,7 @@ export default function QueuePage() {
   if (!drafts) return null;
 
   const counts = {
+    pending: drafts.filter((d) => d.status === "pending").length,
     new: drafts.filter((d) => d.status === "new").length,
     total: drafts.length,
   };
@@ -116,8 +157,8 @@ export default function QueuePage() {
     <div>
       <h1 className="page-title">Review queue</h1>
       <p className="page-subtitle">
-        {counts.new} new · {counts.total} total. Nothing sends automatically —
-        you copy the draft into your mail or LinkedIn client and mark it sent here.
+        {counts.pending} pending · {counts.new} new · {counts.total} total. Nothing
+        sends automatically — and drafts are only generated when you ask for them.
       </p>
 
       <div className="section row">
@@ -130,17 +171,29 @@ export default function QueuePage() {
             {s}
           </button>
         ))}
+        {counts.pending > 0 && (
+          <button
+            className="btn small primary"
+            style={{ marginLeft: "auto" }}
+            disabled={generatingAll}
+            onClick={() => void generateAll()}
+          >
+            {generatingAll
+              ? "Generating…"
+              : `Generate all drafts (${counts.pending})`}
+          </button>
+        )}
       </div>
 
       {visible.length === 0 ? (
         <div className="empty-state">
           {drafts.length === 0 ? (
             <p>
-              No drafts yet. Trigger a run — kept posts that pass the YoE
-              filter and hiring-intent check land here.
+              No leads yet. Trigger a run — kept posts that pass the YoE filter
+              and hiring-intent check land here as pending leads.
             </p>
           ) : (
-            <p>No drafts with status "{filter}".</p>
+            <p>No leads with status "{filter}".</p>
           )}
         </div>
       ) : (
@@ -172,8 +225,10 @@ export default function QueuePage() {
                   key={d.id}
                   draft={d}
                   open={open}
+                  generating={generatingIds.includes(d.id)}
                   onToggle={() => setExpandedId(open ? null : d.id)}
                   onSetStatus={setStatus}
+                  onGenerate={generate}
                   confirmSend={confirmSendId === d.id}
                   onConfirmSend={() => setConfirmSendId(d.id)}
                   onCancelConfirm={() => setConfirmSendId(null)}
@@ -190,16 +245,20 @@ export default function QueuePage() {
 function RowGroup({
   draft,
   open,
+  generating,
   onToggle,
   onSetStatus,
+  onGenerate,
   confirmSend,
   onConfirmSend,
   onCancelConfirm,
 }: {
   draft: Draft;
   open: boolean;
+  generating: boolean;
   onToggle: () => void;
   onSetStatus: (id: number, status: Draft["status"]) => Promise<void>;
+  onGenerate: (id: number) => Promise<void>;
   confirmSend: boolean;
   onConfirmSend: () => void;
   onCancelConfirm: () => void;
@@ -266,9 +325,30 @@ function RowGroup({
                   {draft.author_headline}
                 </p>
               )}
-              <pre className="draft-text">{draft.draft_text}</pre>
+              {draft.draft_text ? (
+                <pre className="draft-text">{draft.draft_text}</pre>
+              ) : (
+                <details>
+                  <summary className="muted" style={{ cursor: "pointer" }}>
+                    Source post
+                  </summary>
+                  <pre className="draft-text muted">{draft.post_text || "(post text unavailable)"}</pre>
+                </details>
+              )}
               <div className="row" style={{ marginTop: 12 }}>
-                {draft.status !== "sent" &&
+                {draft.status === "pending" && (
+                  <button
+                    className="btn small primary"
+                    disabled={generating}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onGenerate(draft.id);
+                    }}
+                  >
+                    {generating ? "Generating draft…" : "Generate draft"}
+                  </button>
+                )}
+                {draft.status !== "pending" && draft.status !== "sent" &&
                   (confirmSend ? (
                     <span className="inline-confirm">
                       <button
@@ -295,7 +375,7 @@ function RowGroup({
                       Mark as sent
                     </button>
                   ))}
-                {draft.status !== "reviewed" && (
+                {draft.status !== "pending" && draft.status !== "reviewed" && (
                   <button
                     className="btn small"
                     onClick={(e) => {
@@ -306,7 +386,7 @@ function RowGroup({
                     Mark reviewed
                   </button>
                 )}
-                {draft.status !== "skipped" && (
+                {draft.status !== "pending" && draft.status !== "skipped" && (
                   <button
                     className="btn small"
                     onClick={(e) => {
@@ -317,7 +397,7 @@ function RowGroup({
                     Skip
                   </button>
                 )}
-                {draft.status !== "new" && (
+                {draft.status !== "pending" && draft.status !== "new" && (
                   <button
                     className="btn small"
                     onClick={(e) => {

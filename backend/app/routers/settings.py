@@ -23,6 +23,7 @@ async def get_settings() -> dict:
     resume_state = await resume_service.get_resume_state()
     all_drafts = await queue_service.list_queue()
     drafts_new = [d for d in all_drafts if d["status"] == "new"]
+    drafts_pending = [d for d in all_drafts if d["status"] == "pending"]
     prereq = prerequisites()
 
     if not prereq["docker_installed"]:
@@ -57,5 +58,6 @@ async def get_settings() -> dict:
             "resume_cached": resume_state.has_resume,
             "drafts_total": len(all_drafts),
             "drafts_new": len(drafts_new),
+            "drafts_pending": len(drafts_pending),
         },
     }
