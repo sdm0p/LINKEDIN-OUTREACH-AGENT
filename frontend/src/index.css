@@ -1,0 +1,534 @@
+/*
+ * Design system — the rules from the plan, encoded as tokens:
+ * - One neutral grayscale base + exactly one accent (teal), used only for
+ *   status badges, the primary action button, and the active nav item.
+ * - One font family, two weights (400/600), four sizes.
+ * - 8px spacing base (4px is the only allowed half-step); every margin,
+ *   padding, and gap is a multiple of 4px.
+ * - Flat surfaces, no shadows/gradients, one 6px radius everywhere.
+ */
+
+:root {
+  /* Neutrals */
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --text: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #a1a1aa;
+  --inverse-bg: #18181b;
+  --inverse-text: #fafafa;
+
+  /* The single accent */
+  --accent: #0f766e;
+  --accent-hover: #115e59;
+  --accent-soft-bg: #f0fdfa;
+  --accent-soft-border: #99f6e4;
+
+  /* Type — 4 sizes only */
+  --font: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --size-title: 20px; /* page title, weight 600 */
+  --size-heading: 13px; /* section heading, weight 600 */
+  --size-body: 13px; /* body, weight 400 */
+  --size-small: 11.5px; /* meta text, weight 400 */
+
+  /* Spacing — multiples of the 4/8px base only */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* One radius everywhere */
+  --radius: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: var(--size-body);
+  font-weight: 400;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
+
+/* ---------- Layout: persistent sidebar + dense main area ---------- */
+
+.app {
+  display: flex;
+  height: 100%;
+}
+
+.sidebar {
+  width: 216px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-6) var(--sp-3);
+}
+
+.sidebar-brand {
+  font-size: var(--size-heading);
+  font-weight: 600;
+  padding: 0 var(--sp-3) var(--sp-6);
+  letter-spacing: 0.02em;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+
+.nav-item:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.nav-item.active {
+  color: var(--accent);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+
+.nav-item svg {
+  flex-shrink: 0;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: var(--sp-3);
+  font-size: var(--size-small);
+  color: var(--text-muted);
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--sp-6) var(--sp-8);
+}
+
+.page-title {
+  font-size: var(--size-title);
+  font-weight: 600;
+  margin-bottom: var(--sp-2);
+}
+
+.page-subtitle {
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-6);
+}
+
+.section {
+  margin-bottom: var(--sp-6);
+}
+
+.section-heading {
+  font-size: var(--size-heading);
+  font-weight: 600;
+  margin-bottom: var(--sp-3);
+}
+
+/* ---------- Cards, tables, badges ---------- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+}
+
+.card + .card {
+  margin-top: var(--sp-4);
+}
+
+.meta-row {
+  display: flex;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.meta-label {
+  font-size: var(--size-small);
+  color: var(--text-muted);
+}
+
+.meta-value {
+  font-weight: 600;
+}
+
+table.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.data-table th {
+  text-align: left;
+  font-size: var(--size-small);
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.data-table td {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--size-small);
+  font-weight: 600;
+  padding: 2px var(--sp-2);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  background: var(--surface);
+  white-space: nowrap;
+}
+
+.badge.accent {
+  border-color: var(--accent-soft-border);
+  background: var(--accent-soft-bg);
+  color: var(--accent);
+}
+
+.badge.filled {
+  border-color: var(--inverse-bg);
+  background: var(--inverse-bg);
+  color: var(--inverse-text);
+}
+
+.badge.muted {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+}
+
+/* ---------- Buttons, inputs ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font);
+  font-size: var(--size-body);
+  font-weight: 600;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--bg);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--inverse-text);
+}
+
+.btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn.small {
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--size-small);
+}
+
+.input {
+  font-family: var(--font);
+  font-size: var(--size-body);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* ---------- Chips (skills), key-value grids ---------- */
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.chip {
+  font-size: var(--size-small);
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  background: var(--bg);
+}
+
+/* ---------- Inline confirm (no browser alert/confirm) ---------- */
+
+.inline-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* ---------- Toasts ---------- */
+
+.toast-container {
+  position: fixed;
+  bottom: var(--sp-4);
+  right: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  z-index: 100;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: var(--inverse-bg);
+  color: var(--inverse-text);
+  border-radius: var(--radius);
+  padding: var(--sp-3) var(--sp-4);
+  max-width: 420px;
+}
+
+.toast.success {
+  border-left: 3px solid var(--accent);
+}
+
+/* ---------- Run trace stepper ---------- */
+
+.stepper {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.stage {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.stage.active {
+  border-color: var(--accent);
+}
+
+.stage-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: none;
+  border: none;
+  font-family: var(--font);
+  font-size: var(--size-body);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.stage-header:hover {
+  background: var(--bg);
+}
+
+.stage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.stage.active .stage-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.stage-name {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.stage-headline {
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-body {
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.stage-entry {
+  font-size: var(--size-small);
+  color: var(--text-secondary);
+}
+
+.raw-pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+  font-size: var(--size-small);
+  overflow: auto;
+  max-height: 320px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------- Draft detail (review queue expandable row) ---------- */
+
+.draft-detail {
+  padding: var(--sp-2) var(--sp-2);
+}
+
+.draft-text {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+  font-family: var(--font);
+  font-size: var(--size-body);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* ---------- Empty states ---------- */
+
+.empty-state {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  padding: var(--sp-8);
+  text-align: center;
+  color: var(--text-secondary);
+  background: var(--surface);
+}
+
+.empty-state .btn {
+  margin-top: var(--sp-4);
+}
+
+/* ---------- Misc ---------- */
+
+.muted {
+  color: var(--text-muted);
+  font-size: var(--size-small);
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--sp-4) 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.row.between {
+  justify-content: space-between;
+}
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

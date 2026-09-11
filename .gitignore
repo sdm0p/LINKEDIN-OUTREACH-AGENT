@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+
+# Local data — never commit: resume, SQLite store, and secrets
+backend/.env
+backend/data/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Runtime logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
