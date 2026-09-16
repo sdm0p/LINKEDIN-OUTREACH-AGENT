@@ -11,6 +11,9 @@ from typing import Any, TypedDict
 class RunState(TypedDict, total=False):
     run_id: str
     recency: str
+    # How many keywords this run searches: an int subset, or None for the
+    # whole active pool. JSON-safe: None survives checkpointing fine.
+    keyword_limit: int | None
     # Resume/keyword stage outputs.
     resume_ok: bool
     yoe: int

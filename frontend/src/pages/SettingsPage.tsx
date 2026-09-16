@@ -58,13 +58,38 @@ function PurgeControls() {
   );
 }
 
+interface LinkedInHealth {
+  status: string;
+  detail: string;
+}
+
 export default function SettingsPage() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [health, setHealth] = useState<LinkedInHealth | null>(null);
 
   useEffect(() => {
     api<SettingsInfo>("/api/settings")
       .then(setInfo)
       .catch(() => undefined);
+  }, []);
+
+  const runHealthCheck = useCallback(async () => {
+    setChecking(true);
+    setHealth(null);
+    try {
+      const res = await api<LinkedInHealth>("/api/settings/linkedin/check", {
+        method: "POST",
+      });
+      setHealth(res);
+    } catch (err) {
+      setHealth({
+        status: "unavailable",
+        detail: err instanceof ApiError ? err.message : "Health check request failed",
+      });
+    } finally {
+      setChecking(false);
+    }
   }, []);
 
   if (!info) return null;
@@ -126,6 +151,23 @@ export default function SettingsPage() {
         <p className="muted" style={{ marginTop: 12 }}>
           {li.detail}
         </p>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button
+            className="btn small"
+            disabled={checking || !li.docker_installed || !li.session_dir_present}
+            onClick={() => void runHealthCheck()}
+            title="Spawns the MCP container and makes one read-only call — can take up to a minute"
+          >
+            {checking ? <span className="spinner" /> : null}
+            {checking ? "Checking session..." : "Check session now"}
+          </button>
+          {health && (
+            <span className={`badge ${health.status === "valid" ? "accent" : ""}`}>
+              {health.status}
+            </span>
+          )}
+        </div>
+        {health && <p className="muted" style={{ marginTop: 8 }}>{health.detail}</p>}
         <p className="muted" style={{ marginTop: 8 }}>
           One-time login (opens a browser viewer on port 6080):
           <code> docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp -p 127.0.0.1:6080:6080 stickerdaniel/linkedin-mcp-server:latest --login --login-viewer</code>

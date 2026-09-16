@@ -79,6 +79,7 @@ export default function RunPage() {
   const [run, setRun] = useState<RunPayload | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [recency, setRecency] = useState("24h");
+  const [allKeywords, setAllKeywords] = useState(false);
   const [starting, setStarting] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [validation, setValidation] = useState<ValidationResult | null>(null);
@@ -144,7 +145,10 @@ export default function RunPage() {
       await api("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recency }),
+        body: JSON.stringify({
+          recency,
+          keyword_limit: allKeywords ? "all" : "default",
+        }),
       });
       await poll();
       toast("Run started");
@@ -153,7 +157,7 @@ export default function RunPage() {
     } finally {
       setStarting(false);
     }
-  }, [recency, poll, toast]);
+  }, [recency, allKeywords, poll, toast]);
 
   const validate = useCallback(async () => {
     setValidating(true);
@@ -195,6 +199,18 @@ export default function RunPage() {
               <option value="month">Past month</option>
             </select>
           </div>
+          <label
+              className="row"
+              style={{ gap: 8, cursor: "pointer" }}
+              title="Search every active keyword in this run, instead of the usual 5-keyword rotation"
+            >
+              <input
+                type="checkbox"
+                checked={allKeywords}
+                onChange={(e) => setAllKeywords(e.target.checked)}
+              />
+              <span className="muted">Search all keywords (full pool this run)</span>
+            </label>
           <button
             className="btn primary"
             disabled={starting || running}

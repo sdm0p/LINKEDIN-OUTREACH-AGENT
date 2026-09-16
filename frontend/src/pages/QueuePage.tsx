@@ -43,6 +43,17 @@ function statusBadgeClass(status: Draft["status"]): string {
   return "badge";
 }
 
+function formatAdded(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export default function QueuePage() {
   const toast = useToast();
   const [drafts, setDrafts] = useState<Draft[] | null>(null);
@@ -214,6 +225,9 @@ export default function QueuePage() {
               <th onClick={() => toggleSort("status")} style={{ cursor: "pointer" }}>
                 Status {sortKey === "status" && (sortAsc ? "▲" : "▼")}
               </th>
+              <th onClick={() => toggleSort("created_at")} style={{ cursor: "pointer" }}>
+                Added {sortKey === "created_at" && (sortAsc ? "▲" : "▼")}
+              </th>
               <th>Source</th>
             </tr>
           </thead>
@@ -299,6 +313,9 @@ function RowGroup({
         <td>
           <span className={statusBadgeClass(draft.status)}>{draft.status}</span>
         </td>
+        <td className="muted" title={new Date(draft.created_at).toLocaleString()}>
+          {formatAdded(draft.created_at)}
+        </td>
         <td>
           {(draft.post_url || draft.author_profile_url) && (
             <a
@@ -318,7 +335,7 @@ function RowGroup({
       </tr>
       {open && (
         <tr>
-          <td colSpan={7} style={{ background: "var(--bg)" }}>
+          <td colSpan={8} style={{ background: "var(--bg)" }}>
             <div className="draft-detail">
               {draft.author_headline && (
                 <p className="muted" style={{ marginBottom: 8 }}>

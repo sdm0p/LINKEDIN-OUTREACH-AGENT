@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from ..search.base import SearchError, get_linkedin_source
 from ..search.linkedin_mcp import _RECENTY_MAP
-from ..services import run_service
+from ..services import keyword_service, run_service
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -22,7 +22,22 @@ async def trigger(payload: dict):
     recency = str(payload.get("recency", "24h"))
     if recency not in _RECENTY_MAP:
         return JSONResponse(status_code=400, content={"detail": "recency must be 24h, week, or month"})
-    run_id = await run_service.start_run(recency)
+    # keyword_limit: absent -> default LRU rotation size, "all" -> every
+    # active keyword in one run, integer -> explicit cap.
+    raw_limit = payload.get("keyword_limit", "default")
+    keyword_limit: int | None
+    if raw_limit == "all":
+        keyword_limit = None
+    elif raw_limit == "default":
+        keyword_limit = keyword_service.KEYWORDS_PER_RUN
+    else:
+        try:
+            keyword_limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=400, content={"detail": "keyword_limit must be an integer, 'all', or omitted"})
+        if keyword_limit < 1:
+            return JSONResponse(status_code=400, content={"detail": "keyword_limit must be >= 1"})
+    run_id = await run_service.start_run(recency, keyword_limit=keyword_limit)
     return {"run_id": run_id}
 
 

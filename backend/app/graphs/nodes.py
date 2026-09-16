@@ -49,7 +49,9 @@ async def load_resume(state: RunState) -> dict:
 
 async def pick_keywords(state: RunState) -> dict:
     trace = trace_for(state["run_id"])
-    selected = await keyword_service.pick_for_run(state["run_id"])
+    selected = await keyword_service.pick_for_run(
+        state["run_id"], limit=state.get("keyword_limit", keyword_service.KEYWORDS_PER_RUN)
+    )
     trace.log(
         "keyword-generation",
         f"Selected {len(selected)} of pool for this run: "

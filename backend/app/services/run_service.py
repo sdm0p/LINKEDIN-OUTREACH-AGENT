@@ -65,7 +65,7 @@ def _summary_from_state(values: dict, pending_count: int) -> dict:
     }
 
 
-async def execute_run(run_id: str, recency: str) -> None:
+async def execute_run(run_id: str, recency: str, keyword_limit: int | None = None) -> None:
     """Drive the run graph, flushing the trace at every batch boundary.
 
     Every failure mode lands in `persist_trace`: no exception may leave a
@@ -78,7 +78,11 @@ async def execute_run(run_id: str, recency: str) -> None:
             registered = True
             _seed_run(run_id, recency)
             config = {"configurable": {"thread_id": run_id}}
-            initial = {"run_id": run_id, "recency": recency}
+            initial: dict = {
+                "run_id": run_id,
+                "recency": recency,
+                "keyword_limit": keyword_limit,
+            }
 
             status = "running"
             error: str | None = None
@@ -87,7 +91,11 @@ async def execute_run(run_id: str, recency: str) -> None:
                 async with saver_session() as checkpointer:
                     graph = await build_run_graph(checkpointer)
                     config = {"configurable": {"thread_id": run_id}}
-                    initial = {"run_id": run_id, "recency": recency}
+                    initial = {
+                        "run_id": run_id,
+                        "recency": recency,
+                        "keyword_limit": keyword_limit,
+                    }
                     async for _chunk in graph.astream(initial, config=config):
                         # One stream event per node execution (per batch).
                         persist_trace(run_id, trace, "running")
@@ -124,11 +132,19 @@ async def execute_run(run_id: str, recency: str) -> None:
                 release_trace(run_id)
 
 
-async def start_run(recency: str) -> str:
-    """Create the run row and schedule execution. Returns the run id."""
+async def start_run(
+    recency: str, keyword_limit: int | None = None
+) -> str:
+    """Create the run row and schedule execution. Returns the run id.
+
+    keyword_limit: int caps the LRU selection (the default rotation),
+    None runs every active keyword in one go (the "search all" option).
+    """
     run_id = uuid.uuid4().hex
     _seed_run(run_id, recency)
-    asyncio.get_running_loop().create_task(execute_run(run_id, recency))
+    asyncio.get_running_loop().create_task(
+        execute_run(run_id, recency, keyword_limit=keyword_limit)
+    )
     return run_id
 
 

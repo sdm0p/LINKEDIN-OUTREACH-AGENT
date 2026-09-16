@@ -132,11 +132,16 @@ async def remove_keyword(kw_id: int) -> None:
             conn.close()
 
 
-def select_for_run(rows: list[dict], limit: int = KEYWORDS_PER_RUN) -> list[dict]:
+def select_for_run(
+    rows: list[dict], limit: int | None = KEYWORDS_PER_RUN
+) -> list[dict]:
     """Pick this run's subset. Pure function so it is unit-testable.
 
     Pinned + active first, then active sorted by (last_used_at nulls first,
     times_used asc) — least-recently-used coverage across runs.
+
+    limit=None selects every active keyword (the "search all" option);
+    ordering still applies, so the batch sequence is LRU-first.
     """
     active = [r for r in rows if r["active"]]
     pinned = [r for r in active if r["pinned"]]
@@ -146,12 +151,15 @@ def select_for_run(rows: list[dict], limit: int = KEYWORDS_PER_RUN) -> list[dict
         return (r["last_used_at"] or "", r["times_used"])
 
     unpinned.sort(key=_key)
-    return (pinned + unpinned)[:limit]
+    ordered = pinned + unpinned
+    if limit is None:
+        return ordered
+    return ordered[:limit]
 
 
-async def pick_for_run(run_id: str) -> list[dict]:
-    """Select the run's keywords and mark them used. Returns the selection
-    with run state embedded (used_ids stored by the caller's trace)."""
+async def pick_for_run(run_id: str, limit: int | None = KEYWORDS_PER_RUN) -> list[dict]:
+    """Select the run's keywords and mark them used (so the next run's
+    LRU rotation actually reflects this one)."""
     async with _db_lock:
         resume_service._ensure_db()
         conn = _conn()
@@ -164,7 +172,10 @@ async def pick_for_run(run_id: str) -> list[dict]:
         raise ValueError(
             "Keyword pool is empty — generate keywords on the Keywords & roles page."
         )
-    return select_for_run(rows)
+    selected = select_for_run(rows, limit=limit)
+    if selected:
+        await commit_usage([k["id"] for k in selected])
+    return selected
 
 
 async def commit_usage(kw_ids: list[int]) -> None:

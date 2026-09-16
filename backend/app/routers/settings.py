@@ -10,6 +10,7 @@ from fastapi import APIRouter
 
 from ..config import settings
 from ..llm import provider_info
+from ..search.base import get_linkedin_source
 from ..search.linkedin_mcp import prerequisites
 from ..services import keyword_service, queue_service, resume_service
 from ..db import get_resume_cache
@@ -61,3 +62,18 @@ async def get_settings() -> dict:
             "drafts_pending": len(drafts_pending),
         },
     }
+
+
+@router.post("/linkedin/check")
+async def check_linkedin() -> dict:
+    """Live session canary: spawn the MCP container, initialize, call one
+    read-only tool, classify the outcome. Slow (container cold-start), so
+    it only ever runs on an explicit click — never as part of page load."""
+    source = get_linkedin_source()
+    try:
+        result = await source.check_health()
+    except Exception as exc:  # the canary must always answer, even on a crash
+        result = {"status": "unavailable", "detail": repr(exc)[:300]}
+    finally:
+        await source.close()
+    return result
