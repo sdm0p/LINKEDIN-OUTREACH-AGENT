@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    image: linkedin-outreach-agent:local
+    container_name: outreach-agent
+    # Loopback only: the dashboard is reachable from this machine, not the LAN.
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - backend/.env          # GEMINI_API_KEY (+ optional GEMINI_MODEL)
+    environment:
+      DATA_DIR: /app/backend/data
+    volumes:
+      # App database (SQLite) — survives container rebuilds.
+      - app-data:/app/backend/data
+      # Lets the backend spawn the LinkedIn MCP container on the HOST daemon.
+      # The MCP session lives in the host named volume `linkedin-mcp-session`
+      # (created by the one-time login below), so it is not mounted here.
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  app-data:
+
+# One-time LinkedIn login (run from the host, needs a browser):
+#   docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp \
+#     -p 127.0.0.1:6080:6080 \
+#     stickerdaniel/linkedin-mcp-server:latest --login --login-viewer
+#
+# Search runs inside the app container via the socket and reuses that volume.

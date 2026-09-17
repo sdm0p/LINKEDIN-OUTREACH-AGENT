@@ -1,0 +1,12 @@
+# Never ship these into the image.
+.git
+backend/.venv
+backend/data
+backend/.env
+frontend/node_modules
+frontend/dist
+frontend/tsconfig.tsbuildinfo
+*.log
+.freebuff
+__pycache__
+**/__pycache__

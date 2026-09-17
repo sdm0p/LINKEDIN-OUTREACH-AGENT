@@ -10,7 +10,10 @@ backend/data/
 # Node
 node_modules/
 dist/
-*.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
+
+# Built SPA copied into the backend for packaged/local-app serving
+backend/frontend-dist/
 
 # Runtime logs
 *.log

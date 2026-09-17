@@ -86,7 +86,28 @@ orchestration only.
 Prerequisites: Python 3.12+ with [uv](https://docs.astral.sh/uv/), Node 18+,
 Docker, and a free Gemini API key (https://aistudio.google.com/apikey).
 
-### Backend
+### Run it as an app (Docker, one command)
+
+The whole app — API + dashboard — ships as a single container. This is the
+easiest way to run it on any machine (Windows/macOS/Linux with Docker
+Desktop), and the recommended way to share it:
+
+```bash
+# 1. One-time: put your key in backend/.env (see backend/.env.example)
+# 2. Build + run:
+docker compose up --build
+# 3. Open http://localhost:8000 — dashboard served by the backend itself
+```
+
+Data persists across rebuilds in the `app-data` volume. The one-time
+LinkedIn login (browser flow, port 6080) is documented at the bottom of
+`docker-compose.yml` — it creates the host volume `linkedin-mcp-session`
+that search reuses. Everything stays on the machine: the port is bound to
+loopback only, and your resume, leads, and LinkedIn session never leave it.
+
+### Development setup
+
+#### Backend
 
 ```bash
 cd backend
