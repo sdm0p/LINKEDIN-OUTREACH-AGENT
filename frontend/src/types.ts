@@ -22,7 +22,12 @@ export interface ResumeState {
 }
 
 export interface SettingsInfo {
-  llm: { provider: string; model: string; configured: boolean };
+  llm: {
+    provider: string;
+    model: string;
+    configured: boolean;
+    source?: "runtime" | "env" | null;
+  };
   linkedin: {
     status: string;
     detail: string;

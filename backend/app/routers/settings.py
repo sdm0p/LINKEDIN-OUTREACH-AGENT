@@ -7,9 +7,11 @@ about what is known without spawning a browser.
 """
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from ..config import settings
-from ..llm import provider_info
+from ..llm import LLMError, provider_info
 from ..search.base import get_linkedin_source
 from ..search.linkedin_mcp import prerequisites
 from ..services import keyword_service, queue_service, resume_service
@@ -62,6 +64,45 @@ async def get_settings() -> dict:
             "drafts_pending": len(drafts_pending),
         },
     }
+
+
+class _KeyPayload(BaseModel):
+    api_key: str
+
+
+@router.post("/llm/key")
+async def set_llm_key(payload: _KeyPayload) -> dict:
+    """Set the Gemini API key from the Settings page. Live-verifies it with
+    a one-token call before persisting; stores it in the data dir (the
+    Docker volume in packaged deployments) so it survives restarts. The
+    key is never returned by any endpoint."""
+    key = payload.api_key.strip()
+    if not key:
+        return JSONResponse(status_code=400, content={"detail": "API key is required."})
+    if not key.startswith("AIza") or len(key) < 30:
+        return JSONResponse(status_code=400, content={"detail": "That does not look like a Gemini API key (should start with 'AIza'). Get one at aistudio.google.com/apikey."})
+
+    # Verify before persisting — one real call, so a wrong key never gets saved.
+    from ..llm.gemini import GeminiProvider
+
+    probe = GeminiProvider(api_key=key, model=settings.gemini_model)
+    try:
+        await probe.generate_json(
+            system="Reply with JSON only.", user='Return {"ok": true} and nothing else.'
+        )
+    except LLMError as exc:
+        return JSONResponse(status_code=400, content={"detail": f"Key rejected: {str(exc)[:200]}"})
+
+    settings.set_api_key_runtime(key)
+    return {"ok": True, "verified": True}
+
+
+@router.delete("/llm/key")
+async def clear_llm_key() -> dict:
+    """Forget the runtime key (in memory and in backend/.env). Falls back
+    to whatever GEMINI_API_KEY the environment provides."""
+    settings.clear_api_key_runtime()
+    return {"ok": True}
 
 
 @router.post("/linkedin/check")

@@ -63,6 +63,93 @@ interface LinkedInHealth {
   detail: string;
 }
 
+function LlmKeyControls() {
+  const toast = useToast();
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
+  const save = useCallback(async () => {
+    setSaving(true);
+    try {
+      await api("/api/settings/llm/key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: key.trim() }),
+      });
+      toast("Key verified and saved");
+      setKey("");
+      window.location.reload();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : "Could not save key", "error");
+    } finally {
+      setSaving(false);
+    }
+  }, [key, toast]);
+
+  const remove = useCallback(async () => {
+    try {
+      await api("/api/settings/llm/key", { method: "DELETE" });
+      toast("Key removed");
+      window.location.reload();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : "Could not remove key", "error");
+    } finally {
+      setConfirming(false);
+    }
+  }, [toast]);
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="row">
+        <input
+          className="input"
+          style={{ flex: 1 }}
+          type="password"
+          autoComplete="off"
+          placeholder="Paste your Gemini API key (AIza...)"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+        />
+        <button
+          className="btn primary"
+          disabled={saving || key.trim().length < 30}
+          onClick={() => void save()}
+        >
+          {saving ? <span className="spinner" /> : null}
+          {saving ? "Verifying..." : "Save & verify"}
+        </button>
+      </div>
+      <p className="muted" style={{ marginTop: 8 }}>
+        Free key from{" "}
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
+          aistudio.google.com/apikey
+        </a>
+        . It's verified with a live call before being saved, stored only in
+        this app's local data (never sent anywhere else), and never displayed
+        again.
+      </p>
+      {confirming ? (
+        <div className="row" style={{ marginTop: 8 }}>
+          <span className="muted">Remove the stored key?</span>
+          <button className="btn small" onClick={() => void remove()}>
+            Yes, remove
+          </button>
+          <button className="btn small" onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="row" style={{ marginTop: 8 }}>
+          <button className="btn small" onClick={() => setConfirming(true)}>
+            Remove key
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -121,9 +208,17 @@ export default function SettingsPage() {
         </div>
         {!info.llm.configured && (
           <p className="muted" style={{ marginTop: 12 }}>
-            Set GEMINI_API_KEY in backend/.env, then restart the backend.
+            No key configured yet — paste one below to enable resume parsing,
+            keyword generation, and drafts.
           </p>
         )}
+        {info.llm.source === "env" && (
+          <p className="muted" style={{ marginTop: 12 }}>
+            Using GEMINI_API_KEY from the environment. You can replace it here
+            without restarting.
+          </p>
+        )}
+        <LlmKeyControls />
       </div>
 
       <div className="card">
