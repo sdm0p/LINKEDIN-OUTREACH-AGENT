@@ -19,6 +19,7 @@ import random
 
 from langgraph.types import interrupt
 
+from ..config import get_target_countries
 from ..search.base import Post, SearchError, get_linkedin_source
 
 from ..services import keyword_service, queue_service
@@ -61,8 +62,8 @@ async def pick_keywords(state: RunState) -> dict:
         "keywords": selected,
         "keyword_index": 0,
         "totals": {
-            "dedup_skipped": 0, "yoe_dropped": 0, "noise": 0,
-            "no_contact": 0, "leads": 0, "errors": 0,
+            "dedup_skipped": 0, "yoe_dropped": 0, "location_dropped": 0,
+            "noise": 0, "no_contact": 0, "leads": 0, "errors": 0,
         },
         "raw_hits": 0,
         "per_keyword": {},
@@ -85,8 +86,22 @@ async def search_batch(state: RunState) -> dict:
 
     trace.log("search", f"[{i + 1}/{len(keywords)}] Searching: {kw['text']}")
     source = get_linkedin_source()
+
+    # Geo-scoping at the search seam: the MCP search_posts tool has no
+    # location parameter (keywords/date_posted/max_pages only), so with a
+    # single target country we bias results by appending it to the query —
+    # "hiring developer India" pulls India-heavy results. The ingest-side
+    # location filter is the actual guarantee; this just raises the hit
+    # rate. Multiple targets stay un-augmented (an OR-list query would
+    # muddy relevance); the filter alone handles that case.
+    query = kw["text"]
+    targets = get_target_countries()
+    if len(targets) == 1:
+        query = f"{kw['text']} {targets[0]}"
+        trace.log("search", f"Geo-scoped to {targets[0]}: '{query}'")
+
     try:
-        result = await source.search_posts(kw["text"], state["recency"])
+        result = await source.search_posts(query, state["recency"])
     except SearchError as exc:
         trace.log("search", f"Search failed for '{kw['text']}': {exc}")
         raise
@@ -101,6 +116,8 @@ async def search_batch(state: RunState) -> dict:
             "post_id": p.post_id, "text": p.text, "post_url": p.post_url,
             "author_name": p.author_name, "author_headline": p.author_headline,
             "author_profile_url": p.author_profile_url, "posted_at": p.posted_at,
+            "job_id": p.raw.get("job_id", ""),
+            "job_url": p.raw.get("job_url", ""),
         }
         for p in result.posts
     ]
@@ -131,6 +148,10 @@ async def ingest_batch(state: RunState) -> dict:
                 author_headline=d.get("author_headline", ""),
                 author_profile_url=d.get("author_profile_url", ""),
                 posted_at=d.get("posted_at", ""),
+                raw={
+                    "job_id": d.get("job_id", ""),
+                    "job_url": d.get("job_url", ""),
+                },
             )
             for d in state["batch"]
         ]

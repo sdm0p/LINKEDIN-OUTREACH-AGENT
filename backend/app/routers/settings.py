@@ -10,8 +10,9 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..config import settings
+from ..config import get_target_countries, set_target_countries, settings
 from ..llm import LLMError, provider_info
+from ..pipeline.location import selectable_target_countries
 from ..search.base import get_linkedin_source
 from ..search.linkedin_mcp import prerequisites
 from ..services import keyword_service, queue_service, resume_service
@@ -45,6 +46,10 @@ async def get_settings() -> dict:
 
     return {
         "llm": provider_info(),
+        "location_targets": {
+            "countries": get_target_countries(),
+            "available": selectable_target_countries(),
+        },
         "linkedin": {
             "status": status,
             "detail": detail,
@@ -95,6 +100,33 @@ async def set_llm_key(payload: _KeyPayload) -> dict:
 
     settings.set_api_key_runtime(key)
     return {"ok": True, "verified": True}
+
+
+class _TargetsPayload(BaseModel):
+    countries: list[str]
+
+
+@router.put("/location-targets")
+async def put_location_targets(payload: _TargetsPayload):
+    """Set the countries runs should find hiring posts in. Every value must
+    be a selectable country (no free text, no 'Remote' — a bare remote post
+    is not provably inside or outside any country). Empty list clears the
+    geo filter entirely."""
+    available = selectable_target_countries()
+    cleaned: list[str] = []
+    for value in payload.countries:
+        name = value.strip()
+        if not name:
+            continue
+        if name not in available:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"Unknown country: {name}"},
+            )
+        if name not in cleaned:
+            cleaned.append(name)
+    set_target_countries(cleaned)
+    return {"ok": True, "countries": cleaned}
 
 
 @router.delete("/llm/key")

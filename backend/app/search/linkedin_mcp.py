@@ -7,6 +7,18 @@ tools are called, and it exits with the process group.
 
 No scraping logic lives here — everything goes through MCP tool calls.
 Nothing in this module can send messages; only read-only tools are invoked.
+
+Mapping notes (from the live tool contract, see
+linkedin_mcp_server/scraping/posts.py in that repo):
+
+- The `references` section carries per-post permalinks as `feed_post`
+  entries (`/posts/<author-slug>-ugcPost-...` or `/feed/update/...`), plus
+  `job` entries (`/jobs/view/<id>/`) for posts that attach a job card. Post
+  bodies contain no ids, so matching is positional: permalinks and job
+  references are zipped onto posts in feed order (both are capped at 50 per
+  response, in the same order as the text blob).
+- The post's relative age ("3h •", "2d •") is parsed into an approximate
+  posted_at timestamp at ingest time.
 """
 
 import asyncio
@@ -14,6 +26,7 @@ import hashlib
 import json
 import re
 import shutil
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .base import Post, Recency, SearchError, SearchResult
@@ -219,17 +232,54 @@ _RECENTY_MAP: dict[Recency, str] = {
 
 _FEED_POST_MARKER = re.compile(r"^Feed post\s*$", re.MULTILINE)
 _SKIP_LINES = {"", " \u200b", "\u200b", "Follow", "\u2026 more", "more", "Load more"}
-_RELATIVE_AGE = re.compile(r"^\d+\s?(m|h|d|w|mo)\s?\u2022$")
+# Relative ages as rendered on the Posts tab: "3h •", "2d •", "5w •",
+# "1mo •". Single unit only — LinkedIn compounds ("3w •") never mixes.
+_RELATIVE_AGE = re.compile(r"^(\d+)\s?(m|h|d|w|mo)\s?\u2022$")
+_AGE_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks", "mo": "months"}
+
+
+def _parse_posted_at(raw: str) -> str:
+    """'19h •' -> an ISO timestamp approximating when the post went up.
+
+    LinkedIn gives no timezone, so the age is counted back from now in UTC;
+    good enough to sort a queue by recency. Unparseable -> '' (unknown),
+    which downstream sorting treats as oldest rather than guessing.
+    """
+    match = _RELATIVE_AGE.match((raw or "").strip())
+    if not match:
+        return ""
+    amount, unit = int(match.group(1)), match.group(2)
+    # timedelta has no months — approximate one month as 30 days (the
+    # queue only needs a sortable ordering, not calendar precision).
+    if unit == "mo":
+        kwargs = {"days": amount * 30}
+    else:
+        kwargs = {
+            {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}[unit]: amount
+        }
+    try:
+        return (datetime.now(UTC) - timedelta(**kwargs)).isoformat(timespec="minutes")
+    except (OverflowError, ValueError):
+        return ""
+
+
+def _all_references(data: dict) -> list[dict]:
+    """Flat reference list from the response's references section."""
+    refs = data.get("references")
+    if not isinstance(refs, dict):
+        return []
+    out: list[dict] = []
+    for section in refs.values():
+        if isinstance(section, list):
+            out.extend(r for r in section if isinstance(r, dict))
+    return out
 
 
 def _person_references(data: dict) -> dict[str, str]:
     """Extract name -> profile-URL mappings from the references section."""
     out: dict[str, str] = {}
-    refs = data.get("references")
-    if not isinstance(refs, dict):
-        return out
-    for ref in refs.get("search_results", []) or []:
-        if not isinstance(ref, dict) or ref.get("kind") != "person":
+    for ref in _all_references(data):
+        if ref.get("kind") != "person":
             continue
         url = str(ref.get("url") or "")
         name = str(ref.get("text") or "").strip()
@@ -237,6 +287,41 @@ def _person_references(data: dict) -> dict[str, str]:
             out[name.lower()] = (
                 url if url.startswith("http") else f"https://www.linkedin.com{url}"
             )
+    return out
+
+
+_FEED_POST_PATH_RE = re.compile(r"^/(?:posts/|feed/update/)")
+
+
+def _post_permalinks(data: dict) -> list[str]:
+    """Post permalink URLs (feed order), from `feed_post` references."""
+    out: list[str] = []
+    for ref in _all_references(data):
+        if ref.get("kind") != "feed_post":
+            continue
+        url = str(ref.get("url") or "")
+        if not _FEED_POST_PATH_RE.match(url):
+            continue
+        out.append(url if url.startswith("http") else f"https://www.linkedin.com{url}")
+    return out
+
+
+_JOB_PATH_RE = re.compile(r"^/jobs/view/")
+
+
+def _job_references(data: dict) -> list[dict]:
+    """Job-card references (feed order): {url, job_id} per `job` entry."""
+    out: list[dict] = []
+    for ref in _all_references(data):
+        if ref.get("kind") != "job":
+            continue
+        url = str(ref.get("url") or "")
+        if not _JOB_PATH_RE.match(url):
+            continue
+        full = url if url.startswith("http") else f"https://www.linkedin.com{url}"
+        match = re.search(r"/jobs/view/(?:[^/?#]*-)?(\d+)", full)
+        job_id = match.group(1) if match else ""
+        out.append({"job_id": job_id, "job_url": full})
     return out
 
 
@@ -253,7 +338,7 @@ def _parse_post_chunk(lines: list[str], references: dict[str, str]) -> Post | No
         <Author Name>
         (blank / connection-degree lines)
         <Headline>
-        <age> \u2022
+        <age> •
         Follow
         <post body...>
         ... <job-card noise ...>
@@ -264,13 +349,16 @@ def _parse_post_chunk(lines: list[str], references: dict[str, str]) -> Post | No
         return None
 
     author_name = cleaned[0]
-    # Skip connection-degree markers like "\u2022 3rd+" or "\u2022 1st".
+    # Skip connection-degree markers like "• 3rd+" or "• 1st".
     rest = [ln for ln in cleaned[1:] if not re.fullmatch(r"\u2022?\s*(1st|2nd|3rd\+?)\s*\u2022?", ln)]
 
     headline = ""
+    posted_at = ""
     body_start = 0
     for i, ln in enumerate(rest[:6]):
-        if _RELATIVE_AGE.match(ln):
+        age_match = _RELATIVE_AGE.match(ln)
+        if age_match:
+            posted_at = _parse_posted_at(ln)
             body_start = i + 1
             break
         if not headline:
@@ -281,7 +369,8 @@ def _parse_post_chunk(lines: list[str], references: dict[str, str]) -> Post | No
 
     body = "\n".join(rest[body_start:]).strip()
     # Cut embedded job-card noise (observed in job-attached posts) at the
-    # earliest card marker.
+    # earliest card marker. The attached job's own details arrive through
+    # the response's `job` references, so the card text itself is noise.
     card_markers = (
         "Actively reviewing applicants",
         "View job",
@@ -318,7 +407,7 @@ def _parse_post_chunk(lines: list[str], references: dict[str, str]) -> Post | No
         author_name=author_name,
         author_headline=headline,
         author_profile_url=profile_url,
-        posted_at="",
+        posted_at=posted_at,
         raw={"author": author_name, "headline": headline, "profile_url": profile_url},
     )
 
@@ -350,15 +439,27 @@ class LinkedInMCPSource:
             await self.close()
             raise
 
+    async def _tool_data(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """Call a tool and parse its JSON text payload; None when the
+        response is not JSON (caller decides whether that is degraded)."""
+        text = await self._tool_text(tool, arguments)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
     async def search_posts(self, keyword: str, recency: Recency) -> SearchResult:
         """One search_posts call.
 
-        Response schema confirmed by the live validation pass (the plan's
-        open item): the tool returns {"url", "sections", "references"}
-        where sections.search_results is a single text blob with every post
-        separated by "Feed post" lines, and references.search_results maps
-        author names to profile URLs. There are no per-post ids or
-        permalinks, so post ids are content-derived for dedup purposes.
+        Response schema confirmed by the live validation pass: the tool
+        returns {"url", "sections", "references"} where
+        sections.search_results is a single text blob with every post
+        separated by "Feed post" lines; references.search_results maps
+        author names to profile URLs and additionally carries feed_post
+        permalinks and job-card references in feed order. There are no
+        per-post ids in the text, so post ids stay content-derived for
+        dedup; permalinks and job cards are matched positionally.
         """
         text = await self._tool_text(
             "search_posts",
@@ -379,14 +480,61 @@ class LinkedInMCPSource:
 
         section_text = data["sections"].get("search_results") or ""
         references = _person_references(data)
+        permalinks = _post_permalinks(data)
+        job_refs = _job_references(data)
         posts: list[Post] = []
         for lines in _split_feed_posts(section_text):
             post = _parse_post_chunk(lines, references)
             if post is not None:
                 posts.append(post)
 
+        # Positional mapping: the permalinks/job references are produced in
+        # feed order, and _split_feed_posts preserves that order. Zip what
+        # we have; a count mismatch just leaves the tail unmapped.
+        for i, post in enumerate(posts):
+            if i < len(permalinks):
+                post.post_url = permalinks[i]
+            if i < len(job_refs):
+                post.raw["job_id"] = job_refs[i]["job_id"]
+                post.raw["job_url"] = job_refs[i]["job_url"]
+
         degraded = not posts and bool(section_text.strip())
         return SearchResult(posts=posts, raw_hit_count=len(posts), degraded=degraded)
+
+    async def get_job_details(self, job_id: str) -> dict[str, Any]:
+        """One get_job_details call for a job attached to a hiring post.
+        Returns the raw sections dict; empty dict on unparseable output
+        (enrichment is best-effort — never fatal)."""
+        try:
+            data = await self._tool_data("get_job_details", {"job_id": str(job_id)})
+        except SearchError:
+            raise
+        return data or {}
+
+    async def search_job_ids(
+        self, keyword: str, location: str | None = None
+    ) -> list[dict[str, str]]:
+        """Job ids for a keyword via search_jobs, so leads without an
+        attached job card can still be enriched. Ordered results; each
+        entry is {"job_id", "job_url"}."""
+        arguments: dict[str, Any] = {"keywords": keyword, "max_pages": 1}
+        if location:
+            arguments["location"] = location
+        data = await self._tool_data("search_jobs", arguments)
+        if not data:
+            return []
+        ids: list[str] = []
+        for value in data.get("job_ids") or []:
+            value = str(value).strip()
+            if value.isdigit():
+                ids.append(value)
+        return [
+            {
+                "job_id": jid,
+                "job_url": f"https://www.linkedin.com/jobs/view/{jid}/",
+            }
+            for jid in ids
+        ]
 
     def _extract_items(self, data: Any) -> list[Any]:
         """Fallback for list-shaped responses (kept for robustness)."""

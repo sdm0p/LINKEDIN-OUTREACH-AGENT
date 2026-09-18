@@ -28,6 +28,10 @@ export interface SettingsInfo {
     configured: boolean;
     source?: "runtime" | "env" | null;
   };
+  location_targets?: {
+    countries: string[];
+    available: string[];
+  };
   linkedin: {
     status: string;
     detail: string;

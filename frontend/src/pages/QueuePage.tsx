@@ -24,6 +24,12 @@ export interface Draft {
   contact_value: string | null;
   yoe_required: number | null;
   classification: string;
+  location: string | null;
+  country: string | null;
+  posted_at: string | null;
+  job_id: string | null;
+  job_url: string | null;
+  job_details_json: string | null;
   post_text: string;
   draft_text: string | null;
   drafted_at: string | null;
@@ -32,9 +38,14 @@ export interface Draft {
   updated_at: string;
 }
 
-type SortKey = "company" | "role" | "yoe_required" | "status" | "created_at";
+type SortKey = "company" | "role" | "yoe_required" | "status" | "posted_at" | "created_at";
 
 const STATUS_FILTERS = ["all", "pending", "new", "reviewed", "sent", "skipped"] as const;
+
+const FALLBACK_COUNTRIES = [
+  "Remote", "India", "United States", "United Kingdom", "Canada", "Germany",
+  "France", "Netherlands", "Singapore", "United Arab Emirates", "Australia",
+];
 
 function statusBadgeClass(status: Draft["status"]): string {
   if (status === "pending") return "badge muted";
@@ -43,9 +54,10 @@ function statusBadgeClass(status: Draft["status"]): string {
   return "badge";
 }
 
-function formatAdded(iso: string): string {
+function formatPosted(iso: string | null): string {
+  if (!iso) return "unknown";
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
+  if (Number.isNaN(d.getTime())) return "unknown";
   return d.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
@@ -54,24 +66,50 @@ function formatAdded(iso: string): string {
   });
 }
 
+function jobDetails(draft: Draft): Record<string, unknown> | null {
+  if (!draft.job_details_json) return null;
+  try {
+    const parsed = JSON.parse(draft.job_details_json);
+    return typeof parsed === "object" && parsed !== null ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function QueuePage() {
   const toast = useToast();
   const [drafts, setDrafts] = useState<Draft[] | null>(null);
   const [filter, setFilter] = useState<(typeof STATUS_FILTERS)[number]>("all");
-  const [sortKey, setSortKey] = useState<SortKey>("created_at");
+  const [country, setCountry] = useState<string>("all");
+  const [countries, setCountries] = useState<string[]>([]);
+  const [orderBy, setOrderBy] = useState<"added" | "posted">("posted");
+  const [sortKey, setSortKey] = useState<SortKey>("posted_at");
   const [sortAsc, setSortAsc] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [confirmSendId, setConfirmSendId] = useState<number | null>(null);
   const [generatingIds, setGeneratingIds] = useState<number[]>([]);
   const [generatingAll, setGeneratingAll] = useState(false);
+  const [fetchingJobIds, setFetchingJobIds] = useState<number[]>([]);
 
   const refresh = useCallback(async () => {
     try {
-      setDrafts(await api<Draft[]>("/api/queue"));
+      const params = new URLSearchParams();
+      if (filter !== "all") params.set("status", filter);
+      // "unknown" is a client-side bucket (rows with no country at all),
+      // so only real country names go to the API.
+      if (country !== "all" && country !== "unknown") params.set("country", country);
+      params.set("order", orderBy);
+      const qs = params.toString();
+      setDrafts(await api<Draft[]>(`/api/queue${qs ? `?${qs}` : ""}`));
     } catch {
       setDrafts([]);
     }
-  }, []);
+    // Keep the country dropdown fresh: the backend backfills missing
+    // locations on load, so new options can appear after the first poll.
+    api<{ countries: string[] }>("/api/queue/countries")
+      .then((res) => setCountries(res.countries))
+      .catch(() => undefined);
+  }, [filter, country, orderBy]);
 
   useEffect(() => {
     void refresh();
@@ -134,16 +172,34 @@ export default function QueuePage() {
     }
   }, [toast, refresh]);
 
+  const fetchJob = useCallback(
+    async (id: number) => {
+      setFetchingJobIds((prev) => [...prev, id]);
+      try {
+        await api(`/api/queue/${id}/fetch-job`, { method: "POST" });
+        toast("Job details fetched");
+        await refresh();
+      } catch (err) {
+        toast(err instanceof ApiError ? err.message : "Job fetch failed", "error");
+      } finally {
+        setFetchingJobIds((prev) => prev.filter((x) => x !== id));
+      }
+    },
+    [toast, refresh],
+  );
+
   const visible = useMemo(() => {
     let rows = drafts ?? [];
     if (filter !== "all") rows = rows.filter((d) => d.status === filter);
+    if (country === "unknown") rows = rows.filter((d) => !d.country);
+    else if (country !== "all") rows = rows.filter((d) => d.country === country);
     const dir = sortAsc ? 1 : -1;
     return [...rows].sort((a, b) => {
       const va = (a[sortKey] ?? "").toString().toLowerCase();
       const vb = (b[sortKey] ?? "").toString().toLowerCase();
       return va < vb ? -dir : va > vb ? dir : 0;
     });
-  }, [drafts, filter, sortKey, sortAsc]);
+  }, [drafts, filter, country, sortKey, sortAsc]);
 
   const toggleSort = useCallback(
     (key: SortKey) => {
@@ -182,6 +238,33 @@ export default function QueuePage() {
             {s}
           </button>
         ))}
+        <select
+          className="input"
+          style={{ maxWidth: 180 }}
+          value={country}
+          onChange={(e) => setCountry(e.target.value)}
+          title="Filter by country"
+        >
+          <option value="all">All locations</option>
+          <option value="unknown">Location unknown</option>
+          {(countries.length > 0 ? countries : FALLBACK_COUNTRIES)
+            .filter((c) => c !== country && c !== "unknown")
+            .map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+        </select>
+        <select
+          className="input"
+          style={{ maxWidth: 160 }}
+          value={orderBy}
+          onChange={(e) => setOrderBy(e.target.value as "added" | "posted")}
+          title="Default queue order"
+        >
+          <option value="posted">Sort: post time</option>
+          <option value="added">Sort: added time</option>
+        </select>
         {counts.pending > 0 && (
           <button
             className="btn small primary"
@@ -219,14 +302,15 @@ export default function QueuePage() {
                 Role {sortKey === "role" && (sortAsc ? "▲" : "▼")}
               </th>
               <th>Contact</th>
+              <th>Location</th>
               <th onClick={() => toggleSort("yoe_required")} style={{ cursor: "pointer" }}>
                 YoE {sortKey === "yoe_required" && (sortAsc ? "▲" : "▼")}
               </th>
               <th onClick={() => toggleSort("status")} style={{ cursor: "pointer" }}>
                 Status {sortKey === "status" && (sortAsc ? "▲" : "▼")}
               </th>
-              <th onClick={() => toggleSort("created_at")} style={{ cursor: "pointer" }}>
-                Added {sortKey === "created_at" && (sortAsc ? "▲" : "▼")}
+              <th onClick={() => toggleSort("posted_at")} style={{ cursor: "pointer" }}>
+                Posted {sortKey === "posted_at" && (sortAsc ? "▲" : "▼")}
               </th>
               <th>Source</th>
             </tr>
@@ -240,9 +324,11 @@ export default function QueuePage() {
                   draft={d}
                   open={open}
                   generating={generatingIds.includes(d.id)}
+                  fetchingJob={fetchingJobIds.includes(d.id)}
                   onToggle={() => setExpandedId(open ? null : d.id)}
                   onSetStatus={setStatus}
                   onGenerate={generate}
+                  onFetchJob={fetchJob}
                   confirmSend={confirmSendId === d.id}
                   onConfirmSend={() => setConfirmSendId(d.id)}
                   onCancelConfirm={() => setConfirmSendId(null)}
@@ -260,9 +346,11 @@ function RowGroup({
   draft,
   open,
   generating,
+  fetchingJob,
   onToggle,
   onSetStatus,
   onGenerate,
+  onFetchJob,
   confirmSend,
   onConfirmSend,
   onCancelConfirm,
@@ -270,9 +358,11 @@ function RowGroup({
   draft: Draft;
   open: boolean;
   generating: boolean;
+  fetchingJob: boolean;
   onToggle: () => void;
   onSetStatus: (id: number, status: Draft["status"]) => Promise<void>;
   onGenerate: (id: number) => Promise<void>;
+  onFetchJob: (id: number) => Promise<void>;
   confirmSend: boolean;
   onConfirmSend: () => void;
   onCancelConfirm: () => void;
@@ -305,6 +395,10 @@ function RowGroup({
             <span className="muted">{draft.contact_value || "—"}</span>
           </span>
         </td>
+        <td>
+          <div>{draft.country || "—"}</div>
+          <div className="muted">{draft.location || ""}</div>
+        </td>
         <td className="muted">
           {draft.yoe_required != null && draft.yoe_required > 0
             ? `${draft.yoe_required}y req`
@@ -313,34 +407,71 @@ function RowGroup({
         <td>
           <span className={statusBadgeClass(draft.status)}>{draft.status}</span>
         </td>
-        <td className="muted" title={new Date(draft.created_at).toLocaleString()}>
-          {formatAdded(draft.created_at)}
+        <td
+          className="muted"
+          title={
+            draft.posted_at
+              ? `Posted ${new Date(draft.posted_at).toLocaleString()} · added ${new Date(draft.created_at).toLocaleString()}`
+              : `Post time unknown · added ${new Date(draft.created_at).toLocaleString()}`
+          }
+        >
+          {formatPosted(draft.posted_at)}
         </td>
         <td>
-          {(draft.post_url || draft.author_profile_url) && (
+          {draft.post_url ? (
             <a
-              href={draft.post_url || draft.author_profile_url || ""}
+              href={draft.post_url}
               target="_blank"
               rel="noreferrer"
               onClick={(e) => e.stopPropagation()}
-              title={draft.post_url || draft.author_profile_url || ""}
+              title="Open the post"
             >
               <span className="row">
                 <ExternalLink size={14} strokeWidth={1.5} />
-                <span className="muted">open</span>
+                <span className="muted">post</span>
               </span>
             </a>
-          )}
+          ) : draft.author_profile_url ? (
+            <a
+              href={draft.author_profile_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              title="Post permalink unavailable — open the author's profile"
+            >
+              <span className="row">
+                <ExternalLink size={14} strokeWidth={1.5} />
+                <span className="muted">profile</span>
+              </span>
+            </a>
+          ) : null}
         </td>
       </tr>
       {open && (
         <tr>
-          <td colSpan={8} style={{ background: "var(--bg)" }}>
+          <td colSpan={9} style={{ background: "var(--bg)" }}>
             <div className="draft-detail">
               {draft.author_headline && (
                 <p className="muted" style={{ marginBottom: 8 }}>
                   {draft.author_headline}
                 </p>
+              )}
+              {jobDetails(draft) && (
+                <details style={{ marginBottom: 8 }}>
+                  <summary className="muted" style={{ cursor: "pointer" }}>
+                    Job details{draft.job_url ? " (open job posting)" : ""}
+                  </summary>
+                  {draft.job_url && (
+                    <p style={{ marginBottom: 4 }}>
+                      <a href={draft.job_url} target="_blank" rel="noreferrer">
+                        Open job posting on LinkedIn
+                      </a>
+                    </p>
+                  )}
+                  <pre className="draft-text muted">
+                    {String(jobDetails(draft)?.text || "(no details captured)")}
+                  </pre>
+                </details>
               )}
               {draft.draft_text ? (
                 <pre className="draft-text">{draft.draft_text}</pre>
@@ -363,6 +494,23 @@ function RowGroup({
                     }}
                   >
                     {generating ? "Generating draft…" : "Generate draft"}
+                  </button>
+                )}
+                {(draft.job_id || draft.keyword) && !draft.job_details_json && (
+                  <button
+                    className="btn small"
+                    disabled={fetchingJob}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onFetchJob(draft.id);
+                    }}
+                    title={
+                      draft.job_id
+                        ? "Fetch the attached job's details from LinkedIn"
+                        : "Search LinkedIn jobs for this keyword and fetch the top match's details"
+                    }
+                  >
+                    {fetchingJob ? "Fetching job…" : "Fetch job details"}
                   </button>
                 )}
                 {draft.status !== "pending" && draft.status !== "sent" &&

@@ -23,6 +23,7 @@ interface RunPayload {
     per_keyword: Record<string, number>;
     dedup_skipped?: number;
     yoe_dropped?: number;
+    location_dropped?: number;
     noise?: number;
     no_contact?: number;
     capped?: number;
@@ -48,6 +49,7 @@ const STAGE_LABELS: Record<string, string> = {
   search: "Search (per keyword)",
   dedup: "Dedup",
   "yoe-filter": "YoE filter",
+  "location-filter": "Location filter",
   extraction: "Extraction & classification",
   draft: "Drafts",
   run: "Run",
@@ -110,6 +112,47 @@ export default function RunPage() {
   }, []);
 
   const running = run?.status === "running";
+  const availableCountries = settings?.location_targets?.available ?? [];
+  const targetCountries = settings?.location_targets?.countries ?? [];
+
+  // The Run-page location filter writes through to the same setting the
+  // Settings page edits, so both stay in sync. Single-pick here (the
+  // common case: one country covers all its cities/states); multi-target
+  // remains possible on Settings.
+  const setTargetCountry = useCallback(
+    async (value: string) => {
+      const next = value ? [value] : [];
+      try {
+        const res = await api<{ countries: string[] }>(
+          "/api/settings/location-targets",
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ countries: next }),
+          },
+        );
+        setSettings((prev) =>
+          prev
+            ? {
+                ...prev,
+                location_targets: {
+                  available: prev.location_targets?.available ?? [],
+                  countries: res.countries,
+                },
+              }
+            : prev,
+        );
+        toast(
+          value
+            ? `Runs will keep only ${value} posts`
+            : "Location filter off — posts from anywhere qualify",
+        );
+      } catch (err) {
+        toast(err instanceof ApiError ? err.message : "Could not save", "error");
+      }
+    },
+    [toast],
+  );
 
   // Auto-expand the currently-running stage only.
   useEffect(() => {
@@ -199,6 +242,41 @@ export default function RunPage() {
               <option value="month">Past month</option>
             </select>
           </div>
+          <div className="row">
+            <label
+              className="muted"
+              htmlFor="location-target"
+              title="Keep only hiring posts in this country — every city and state matches. Posts naming no location still come through."
+            >
+              Location
+            </label>
+            <select
+              id="location-target"
+              className="input"
+              value={
+                targetCountries.length === 1
+                  ? targetCountries[0]
+                  : targetCountries.length > 1
+                    ? "__multi__"
+                    : ""
+              }
+              onChange={(e) => {
+                if (e.target.value !== "__multi__") void setTargetCountry(e.target.value);
+              }}
+            >
+              <option value="">All locations</option>
+              {targetCountries.length > 1 && (
+                <option value="__multi__">
+                  Multiple ({targetCountries.length}) — pick one to replace
+                </option>
+              )}
+              {availableCountries.map((country) => (
+                <option key={country} value={country}>
+                  {country}
+                </option>
+              ))}
+            </select>
+          </div>
           <label
               className="row"
               style={{ gap: 8, cursor: "pointer" }}
@@ -240,6 +318,9 @@ export default function RunPage() {
                 {run.summary.raw_hits} raw hits · {run.summary.keywords_used.length} keywords
                 {run.summary.yoe_dropped != null
                   ? ` · ${run.summary.yoe_dropped} dropped by YoE`
+                  : ""}
+                {run.summary.location_dropped
+                  ? ` · ${run.summary.location_dropped} dropped by location`
                   : ""}
                 {run.summary.drafts_created != null
                   ? ` · ${run.summary.drafts_created} drafts`

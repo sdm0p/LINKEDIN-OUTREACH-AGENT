@@ -150,6 +150,101 @@ function LlmKeyControls() {
   );
 }
 
+function LocationTargetsCard() {
+  const toast = useToast();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [available, setAvailable] = useState<string[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api<SettingsInfo>("/api/settings")
+      .then((info) => {
+        const lt = info.location_targets;
+        if (lt) {
+          setSelected(lt.countries);
+          setAvailable(lt.available);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setLoaded(true));
+  }, []);
+
+  const toggle = (country: string) => {
+    setSelected((prev) =>
+      prev.includes(country)
+        ? prev.filter((c) => c !== country)
+        : [...prev, country],
+    );
+  };
+
+  const save = useCallback(async () => {
+    setSaving(true);
+    try {
+      await api("/api/settings/location-targets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ countries: selected }),
+      });
+      toast(
+        selected.length
+          ? `Target countries saved: ${selected.join(", ")}`
+          : "Location filter cleared — posts from anywhere qualify",
+      );
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : "Could not save", "error");
+    } finally {
+      setSaving(false);
+    }
+  }, [selected, toast]);
+
+  return (
+    <div className="card">
+      <h2 className="section-heading">Target countries</h2>
+      <p className="muted" style={{ marginBottom: 12 }}>
+        Runs search and keep only hiring posts in these countries — e.g.
+        India matches Bangalore, Delhi, Gurgaon, every city and state.
+        Posts that mention no location still come through; posts provably
+        elsewhere are dropped. Empty = no location filter.
+      </p>
+      {!loaded ? (
+        <span className="spinner" />
+      ) : (
+        <>
+          <div className="chip-row" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {available.map((country) => {
+              const on = selected.includes(country);
+              return (
+                <button
+                  key={country}
+                  className={`btn small${on ? " primary" : ""}`}
+                  onClick={() => toggle(country)}
+                >
+                  {country}
+                  {on ? " ✓" : ""}
+                </button>
+              );
+            })}
+          </div>
+          <div className="row" style={{ marginTop: 12 }}>
+            <button
+              className="btn primary"
+              disabled={saving}
+              onClick={() => void save()}
+            >
+              {saving ? <span className="spinner" /> : null}
+              {saving ? "Saving..." : "Save target countries"}
+            </button>
+            {selected.length > 0 && (
+              <span className="muted">{selected.length} selected</span>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -187,6 +282,8 @@ export default function SettingsPage() {
     <div>
       <h1 className="page-title">Settings</h1>
       <p className="page-subtitle">Provider status and data controls.</p>
+
+      <LocationTargetsCard />
 
       <div className="card">
         <h2 className="section-heading">LLM provider</h2>

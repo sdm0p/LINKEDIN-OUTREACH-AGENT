@@ -16,12 +16,31 @@ router = APIRouter(prefix="/api/queue", tags=["queue"])
 
 
 @router.get("")
-async def list_all(status: str | None = None):
+async def list_all(
+    status: str | None = None,
+    country: str | None = None,
+    order: str = "added",
+):
     if status is not None and status not in (
         "pending", "new", "reviewed", "sent", "skipped"
     ):
         return JSONResponse(status_code=400, content={"detail": "Invalid status filter."})
-    return await queue_service.list_queue(status)
+    if order not in ("added", "posted"):
+        return JSONResponse(status_code=400, content={"detail": "Invalid order."})
+    # Leads ingested before the location feature have no country (and dedup
+    # means a rerun never re-reads those posts) — backfill them from their
+    # stored post text so the filter actually has something to match. Cheap
+    # (regex over text, no LLM/network) and idempotent.
+    await queue_service.backfill_missing_locations()
+    # Empty string = "location unknown" bucket; a name filters exactly that
+    # country. Anything else the DB simply matches on.
+    return await queue_service.list_queue(status, country=country, order=order)
+
+
+@router.get("/countries")
+async def countries():
+    """Countries actually present in the queue (for the filter dropdown)."""
+    return {"countries": await queue_service.list_countries()}
 
 
 @router.patch("/{draft_id}/status")
@@ -52,6 +71,17 @@ async def generate_all():
     Per-lead failures are counted, not fatal."""
     result = await queue_service.generate_all_pending()
     return result
+
+
+@router.post("/{lead_id}/fetch-job")
+async def fetch_job(lead_id: int):
+    """Fetch the attached job's details for one lead (explicit; costs a
+    browser navigation). Uses the captured job id when the post carried a
+    job card, else searches LinkedIn jobs for the lead's keyword."""
+    try:
+        return await queue_service.fetch_job_details(lead_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
 @router.post("/purge")

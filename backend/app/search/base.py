@@ -16,7 +16,11 @@ SOURCE_NAME = "linkedin"
 class Post:
     """A normalized hiring-post record. `raw` keeps the source's original
     fields so later stages (YoE filter, extraction) can recover anything the
-    normalization missed — important until the live schema is validated."""
+    normalization missed — important until the live schema is validated.
+
+    The LinkedIn source fills raw["job_id"]/raw["job_url"] when the post
+    carries an attached job card, and post_url with the post's own
+    permalink when the response provides one."""
 
     post_id: str
     text: str

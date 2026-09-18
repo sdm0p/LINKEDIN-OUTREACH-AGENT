@@ -56,6 +56,7 @@ def _summary_from_state(values: dict, pending_count: int) -> dict:
         "per_keyword": values.get("per_keyword", {}),
         "dedup_skipped": totals.get("dedup_skipped", 0),
         "yoe_dropped": totals.get("yoe_dropped", 0),
+        "location_dropped": totals.get("location_dropped", 0),
         "noise": totals.get("noise", 0),
         "no_contact": totals.get("no_contact", 0),
         "leads_queued": totals.get("leads", 0),

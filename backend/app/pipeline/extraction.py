@@ -30,10 +30,15 @@ You receive one post's text (and the author's headline). Decide:
 - "emails": every email address visible in the post text, including
   obfuscated forms like "name at gmail dot com" or "name [at] gmail
   [dot] com". Empty list when none.
+- "location": the job's location as the country name, when the post
+  states or implies one — use the country, not the city (e.g. "India",
+  "United States", "Germany"). "Remote" when the post says remote/
+  work-from-home without tying it to a country. "" when the post names
+  no location at all.
 
 Respond with ONLY a JSON object, no markdown, no commentary:
 
-{"verdict": "hiring", "company": "", "role": "", "emails": []}
+{"verdict": "hiring", "company": "", "role": "", "emails": [], "location": ""}
 """
 
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
@@ -82,4 +87,5 @@ async def classify_post(
         "company": str(raw.get("company", "")).strip(),
         "role": str(raw.get("role", "")).strip(),
         "emails": merged,
+        "location": str(raw.get("location", "")).strip(),
     }

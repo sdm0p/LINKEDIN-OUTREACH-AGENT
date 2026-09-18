@@ -7,6 +7,7 @@ with status 'pending' and no draft text; a draft is generated later, only
 when explicitly requested, flipping the row to 'new' (then reviewed/sent).
 """
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,6 +70,12 @@ CREATE TABLE IF NOT EXISTS drafts (
     contact_value TEXT,
     yoe_required INTEGER,
     classification TEXT,
+    location TEXT,
+    country TEXT,
+    posted_at TEXT,
+    job_id TEXT,
+    job_url TEXT,
+    job_details_json TEXT,
     post_text TEXT NOT NULL DEFAULT '',
     draft_text TEXT,
     drafted_at TEXT,
@@ -76,6 +83,14 @@ CREATE TABLE IF NOT EXISTS drafts (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+"""
+
+# Created after the migration below: on a pre-feature database the base
+# schema runs while the table still lacks these columns, and an index on a
+# missing column fails.
+_DRAFT_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_drafts_country ON drafts(country);
+CREATE INDEX IF NOT EXISTS idx_drafts_posted_at ON drafts(posted_at);
 """
 
 
@@ -92,19 +107,46 @@ def init_db(db_path: Path) -> None:
     try:
         conn.executescript(_SCHEMA)
         _migrate_drafts(conn)
+        conn.executescript(_DRAFT_INDEXES)
         conn.commit()
     finally:
         conn.close()
 
 
+_DRAFT_COLUMNS_ADDED = {
+    "location": "TEXT",
+    "country": "TEXT",
+    "posted_at": "TEXT",
+    "job_id": "TEXT",
+    "job_url": "TEXT",
+    "job_details_json": "TEXT",
+}
+
+
 def _migrate_drafts(conn: sqlite3.Connection) -> None:
+    """In-place upgrade of the drafts table.
+
+    Pre-queue tables are rebuilt (post_text/drafted_at added, draft_text
+    widened to nullable, 'pending' status allowed). Existing tables only
+    get the queue-feature columns added, one ALTER TABLE per missing
+    column — cheap, and SQLite needs no table rebuild for that.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(drafts)")}
+    if not cols:
+        return
+    if "post_text" not in cols:
+        _rebuild_pre_queue_drafts(conn)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(drafts)")}
+    for name, decl in _DRAFT_COLUMNS_ADDED.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE drafts ADD COLUMN {name} {decl}")
+
+
+def _rebuild_pre_queue_drafts(conn: sqlite3.Connection) -> None:
     """In-place upgrade of pre-queue drafts tables: add post_text/drafted_at,
     widen draft_text to nullable, and allow the 'pending' status. Preserves
     existing rows (they already carry draft_text, so they keep their
     status)."""
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(drafts)")}
-    if not cols or "post_text" in cols:
-        return
     conn.executescript("""
         CREATE TABLE drafts_migrated (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,6 +163,12 @@ def _migrate_drafts(conn: sqlite3.Connection) -> None:
             contact_value TEXT,
             yoe_required INTEGER,
             classification TEXT,
+            location TEXT,
+            country TEXT,
+            posted_at TEXT,
+            job_id TEXT,
+            job_url TEXT,
+            job_details_json TEXT,
             post_text TEXT NOT NULL DEFAULT '',
             draft_text TEXT,
             drafted_at TEXT,
@@ -334,13 +382,15 @@ def insert_draft(conn: sqlite3.Connection, data: dict) -> int:
         INSERT INTO drafts
             (post_id, run_id, keyword, company, role, author_name,
              author_headline, author_profile_url, post_url, contact_method,
-             contact_value, yoe_required, classification, post_text,
-             draft_text, drafted_at, status, created_at, updated_at)
+             contact_value, yoe_required, classification, location,
+             country, posted_at, job_id, job_url, job_details_json,
+             post_text, draft_text, drafted_at, status, created_at, updated_at)
         VALUES (:post_id, :run_id, :keyword, :company, :role, :author_name,
                 :author_headline, :author_profile_url, :post_url,
                 :contact_method, :contact_value, :yoe_required,
-                :classification, :post_text, :draft_text, :drafted_at,
-                :status, :created_at, :updated_at)
+                :classification, :location, :country, :posted_at, :job_id,
+                :job_url, :job_details_json, :post_text, :draft_text,
+                :drafted_at, :status, :created_at, :updated_at)
         """,
         data,
     )
@@ -370,16 +420,88 @@ def list_pending_drafts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def update_draft_location(
+    conn: sqlite3.Connection, draft_id: int, country: str | None, hint: str | None
+) -> None:
+    """Set country (and location hint when empty) on one lead row."""
+    conn.execute(
+        """
+        UPDATE drafts
+        SET country = ?, location = COALESCE(location, ?), updated_at = ?
+        WHERE id = ?
+        """,
+        (country, hint, utcnow(), draft_id),
+    )
+    conn.commit()
+
+
+def save_job_details(
+    conn: sqlite3.Connection, draft_id: int, details: dict
+) -> None:
+    """Persist enriched job details on a lead row (explicit fetch only).
+    The id/url live in their own columns; everything else is stored whole
+    as JSON."""
+    now = utcnow()
+    payload = {k: v for k, v in details.items() if k not in ("job_id", "job_url")}
+    conn.execute(
+        """
+        UPDATE drafts
+        SET job_id = ?, job_url = ?, job_details_json = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            details.get("job_id"),
+            details.get("job_url"),
+            json.dumps(payload, ensure_ascii=False),
+            now,
+            draft_id,
+        ),
+    )
+    conn.commit()
+
+
 def list_drafts(
-    conn: sqlite3.Connection, status: str | None = None
+    conn: sqlite3.Connection,
+    status: str | None = None,
+    country: str | None = None,
+    order: str = "added",
 ) -> list[sqlite3.Row]:
+    """Queue rows. `order` picks the sort: 'posted' = by the post's own
+    timestamp when known, falling back to the ingest order (id) for rows
+    without one, so never-posted-time rows don't float to the top.
+    'added' = newest ingest first (the historical default)."""
+    where = []
+    params: list[str] = []
     if status:
-        return conn.execute(
-            "SELECT * FROM drafts WHERE status = ? "
-            "ORDER BY id DESC",
-            (status,),
-        ).fetchall()
-    return conn.execute("SELECT * FROM drafts ORDER BY id DESC").fetchall()
+        where.append("status = ?")
+        params.append(status)
+    if country is not None:
+        if country == "":
+            where.append("(country IS NULL OR country = '')")
+        else:
+            where.append("country = ?")
+            params.append(country)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    order_sql = (
+        "ORDER BY (posted_at IS NULL OR posted_at = '') ASC, posted_at DESC, id DESC"
+        if order == "posted"
+        else "ORDER BY id DESC"
+    )
+    return conn.execute(
+        f"SELECT * FROM drafts {where_sql} {order_sql}", params
+    ).fetchall()
+
+
+def list_queue_countries(conn: sqlite3.Connection) -> list[str]:
+    """Distinct non-empty countries present in the queue, alphabetical."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT country FROM drafts
+        WHERE country IS NOT NULL AND country != ''
+        ORDER BY country ASC
+        """
+    ).fetchall()
+    return [r["country"] for r in rows]
 
 
 def get_draft(conn: sqlite3.Connection, draft_id: int) -> sqlite3.Row | None:

@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 from pathlib import Path
@@ -44,6 +45,36 @@ def _delete_key_file() -> None:
         _key_file_path().unlink()
     except OSError:
         pass
+
+
+# ---------- run location targets ----------
+# The countries a run should find hiring posts in (e.g. ["India"]). Kept in
+# a data-dir file (survives restarts, like the API-key mirror); empty means
+# no geo filter — posts from anywhere qualify.
+_TARGETS_FILE_NAME = "target_countries.json"
+
+
+def get_target_countries() -> list[str]:
+    """The configured target countries, empty when no geo filter is set.
+    Tolerates a corrupted/missing file by returning empty (fail-open: the
+    location filter only ever DROPS on positive knowledge, so a read
+    failure must not silently start dropping posts)."""
+    try:
+        raw = (settings.data_dir / _TARGETS_FILE_NAME).read_text(encoding="utf-8").strip()
+        data = json.loads(raw) if raw else []
+        if not isinstance(data, list):
+            return []
+        return [str(c).strip() for c in data if str(c).strip()]
+    except OSError:
+        return []
+    except ValueError:
+        return []
+
+
+def set_target_countries(countries: list[str]) -> None:
+    (settings.data_dir / _TARGETS_FILE_NAME).write_text(
+        json.dumps(countries), encoding="utf-8"
+    )
 
 
 class Settings(BaseSettings):
