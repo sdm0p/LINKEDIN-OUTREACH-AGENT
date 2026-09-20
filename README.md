@@ -2,15 +2,15 @@
 
 A local-only, human-in-the-loop job-hunting agent. It reads your resume, works
 out which roles and keywords to search for, finds LinkedIn posts from people
-who are actually hiring, filters them by required experience, and queues the
-leads for your review. Outreach drafts are written **only when you explicitly
-ask for one** — and nothing is ever sent automatically.
+who are actually hiring, filters them by location and required experience, and
+queues the leads for your review. Outreach drafts are written **only when you
+explicitly ask for one** — and nothing is ever sent automatically.
 
 Built for one specific workflow: a job seeker who wants a steady stream of
 fresh, relevant hiring posts (the kind recruiters and founders write by hand,
-not structured job listings), screened against their real years of
-experience, with a review queue they action manually in their own mail and
-LinkedIn clients.
+not structured job listings), screened against their target countries and real
+years of experience, with a review queue they action manually in their own
+mail and LinkedIn clients.
 
 ## How it works
 
@@ -23,20 +23,24 @@ Resume (PDF)
 [3] Keyword generation ──── ~15 search strings in two tiers (skill / title),
    │                        rotated 5 per run, least-recently-used first
    ▼
-[4] LinkedIn search ─────── per keyword, human-paced, recency-filtered
+[4] LinkedIn search ─────── per keyword, human-paced, recency-filtered,
+   │                        geo-scoped when target countries are set
    │                        (stickerdaniel/linkedin-mcp-server in Docker)
    ▼
 [5] Dedup ────────────────── posts already processed are skipped
-[6] YoE filter ───────────── "5+ years required" vs your YoE; unstated -> kept
-[7] Classification ───────── LLM verdict: genuine hiring post vs noise;
-   │                        email extraction (plain + obfuscated "name at gmail dot com")
-[8] Contact resolution ───── email found -> email lead; none -> LinkedIn DM target
+[6] Location filter ──────── post provably outside target countries -> dropped
+   │                        (no place stated -> kept, like unstated YoE)
+[7] YoE filter ───────────── "5+ years required" vs your YoE; unstated -> kept
+[8] Classification ───────── LLM verdict: genuine hiring post vs noise;
+   │                        email extraction (plain + obfuscated "name at gmail dot com");
+   │                        location field (second net for the country filter)
+[9] Contact resolution ───── email found -> email lead; none -> LinkedIn DM target
    ▼
 Pending leads (review queue)          ← a run stops here. It never drafts.
    │
    │  you click "Generate draft" (per lead, or generate-all)
    ▼
-[9] Draft generation ────── short, specific email or DM, daily-capped
+[10] Draft generation ────── short, specific email or DM, daily-capped
    ▼
 Review → you send it yourself, then mark it sent
 ```
@@ -51,6 +55,60 @@ Two hard guarantees, enforced in code rather than convention:
 - **Nothing sends.** No SMTP client, no LinkedIn message-sending calls, no
   scheduler, no cron. Every run is triggered by hand; every send is done by
   you, outside the app. This is a permanent design constraint, not a TODO.
+
+## Location targeting
+
+Searches on LinkedIn's post feed are global text searches, so geo-scoping is
+built at this app's layer, in three stages that mirror the YoE filter's
+philosophy (drop only on positive knowledge, never guess):
+
+1. **Geo-scoped queries** — with target countries set, every keyword goes out
+   as `"<keyword> India"` so the results skew toward the places you want.
+2. **Pre-LLM hard drop** — a deterministic resolver
+   (`backend/app/pipeline/location.py`) reads each post's text: labeled lines
+   (`📍 Location: Bangalore, India`), city aliases (Bangalore/Bengaluru,
+   Gurgaon, Dubai, London, … → country), `"hiring in Germany"`,
+   `"Remote (US)"`, nationality hints (`"US only"`). If the post provably
+   sits outside your targets, it's dropped before it ever costs an LLM call,
+   and the run trace shows why.
+3. **Post-LLM net** — the classifier also extracts the job's country against
+   a closed list; any post the regexes missed but the LLM places outside the
+   targets is dropped at ingest.
+
+Posts that name **no location at all are kept** — the same rule as an
+unstated YoE requirement. They land in the queue's **"Location unknown"**
+bucket rather than being guessed at. Bare "Remote" posts also pass: remote
+work could sit inside any target country.
+
+Set targets from the **Run page dropdown** (single country, next to Recency)
+or the **Settings page** (multi-country). Both write the same setting, which
+persists in the data directory and survives restarts. Leave it empty and the
+filter is fully off.
+
+## The review queue
+
+Leads land as `pending` with the source post attached, then:
+
+- **Sort** by time added, or by **time the post was posted** (newest first;
+  LinkedIn only exposes a relative age — "19h", "2d" — which is converted to
+  an approximate timestamp at ingest; posts with no age sort last).
+- **Filter by status and by country** — the country dropdown lists the
+  countries actually present in your queue, plus a "Location unknown" bucket.
+- **Real post links** — the Source column opens the post itself; when only
+  the author's profile was available, it's labeled "profile".
+- **Job details on demand** — posts with an attached LinkedIn job card
+  capture the job id; a "Fetch job details" button pulls the job's location
+  line, full posting text, and link (an explicit click, since it costs a
+  browser navigation; posts without a job card fall back to a LinkedIn job
+  search on the lead's keyword).
+- **Drafts on demand** — generate per lead or generate-all (daily-capped),
+  review the text, send it yourself, mark it sent.
+  Statuses: `pending → new → reviewed/sent/skipped`.
+
+Leads ingested before the location feature are **backfilled automatically**
+the next time the queue loads: their stored post text is re-run through the
+deterministic resolver (cheap — regex, no LLM, no network) so the country
+filter works on old rows too.
 
 ## Orchestration: LangGraph
 
@@ -79,7 +137,7 @@ orchestration only.
 | Search | `stickerdaniel/linkedin-mcp-server` in Docker (headless Chromium, your own session) |
 | Resume parsing | pdfplumber |
 | Frontend | React 19 + TypeScript + Vite, plain CSS |
-| Tooling | uv (Python), npm (Node), pytest (66 tests) |
+| Tooling | uv (Python), npm (Node), pytest (146 tests) |
 
 ## Getting started
 
@@ -88,22 +146,30 @@ Docker, and a free Gemini API key (https://aistudio.google.com/apikey).
 
 ### Run it as an app (Docker, one command)
 
-The whole app — API + dashboard — ships as a single container. This is the
-easiest way to run it on any machine (Windows/macOS/Linux with Docker
-Desktop), and the recommended way to share it:
+The whole app — API **and** dashboard — ships as a single container built in
+two stages (Node compiles the frontend, the Python image serves the built
+files alongside the API). This is the easiest way to run it on any machine
+(Windows/macOS/Linux with Docker Desktop), and the recommended way to share it:
 
 ```bash
 # 1. One-time: put your key in backend/.env (see backend/.env.example)
 # 2. Build + run:
-docker compose up --build
+docker compose up -d --build
 # 3. Open http://localhost:8000 — dashboard served by the backend itself
 ```
 
-Data persists across rebuilds in the `app-data` volume. The one-time
-LinkedIn login (browser flow, port 6080) is documented at the bottom of
-`docker-compose.yml` — it creates the host volume `linkedin-mcp-session`
-that search reuses. Everything stays on the machine: the port is bound to
-loopback only, and your resume, leads, and LinkedIn session never leave it.
+There is no separate frontend server or port: one uvicorn process serves the
+API at `/api/*` and the SPA at `/`. The port is bound to loopback only.
+
+**Data persists across rebuilds** in the `app-data` volume (SQLite database,
+stored API key, target countries). When you pull new code, re-run
+`docker compose up -d --build` — then **hard-refresh the browser**
+(Ctrl+Shift+R) so it doesn't keep serving the old JS bundle.
+
+The one-time LinkedIn login (browser flow, port 6080) is documented at the
+bottom of `docker-compose.yml` — it creates the host volume
+`linkedin-mcp-session` that search reuses. Everything stays on the machine:
+your resume, leads, and LinkedIn session never leave it.
 
 ### Development setup
 
@@ -116,9 +182,9 @@ uv sync
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-Tests: `uv run pytest`
+Tests: `uv run pytest` (146 tests, fake LLM, no network — safe to run freely)
 
-### Frontend
+#### Frontend
 
 ```bash
 cd frontend
@@ -143,6 +209,11 @@ profile-creation ACL hardening). During runs the server is invoked per run
 over stdio as
 `docker run -i --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp stickerdaniel/linkedin-mcp-server:latest`.
 
+Verify the session any time from **Settings → check LinkedIn session** (or
+`POST /api/settings/linkedin/check`): it spawns the container, calls one
+read-only tool, and reports the result. Slow by design (container cold-start)
+and only ever runs on an explicit click.
+
 ## Usage
 
 1. **Resume page** — upload your PDF. It's parsed once and cached by file
@@ -151,14 +222,20 @@ over stdio as
 2. **Keywords & roles** — generate the keyword pool from the parsed resume.
    Edit, pin (pins always go out), or remove entries; rotation covers the
    rest over roughly a week at 5 per run.
-3. **Run page** — "Run now" with a recency filter (24h / week / month) and
-   watch the live per-stage trace as each keyword batch executes.
+3. **Run page** — "Run now" with a **recency filter** (24h / week / month)
+   and a **location dropdown** (default "All locations" = filter off). Watch
+   the live per-stage trace: geo-scoping, per-batch search, and the
+   location/YoE drop stages with reasons (e.g. `Dropped — Germany outside
+   target (India)`). The summary counts both drop kinds.
 4. **Review queue** — leads land as `pending` with the source post attached.
-   Generate drafts when you're ready (per lead or generate-all; daily-capped),
-   review the text, send it yourself from your mail/LinkedIn client, and mark
-   it sent. Statuses: `pending → new → reviewed/sent/skipped`.
-5. **Settings** — LLM provider/model status, LinkedIn session prerequisites,
-   draft cap, and retention info (with manual purge; nothing purges itself).
+   Sort by posted time, filter by status/country, open the post, fetch job
+   details when a job card was attached. Generate drafts when you're ready
+   (per lead or generate-all; daily-capped), review the text, send it
+   yourself from your mail/LinkedIn client, and mark it sent.
+5. **Settings** — LLM provider/model status (set the API key here; it's
+   live-verified before storing), **target countries** multi-picker,
+   LinkedIn session prerequisites + manual health check, draft cap, and
+   retention info (with manual purge; nothing purges itself).
 
 ## Configuration
 
@@ -166,9 +243,12 @@ All config lives in `backend/.env` (see `.env.example`):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | — | Required. Free key from Google AI Studio. |
+| `GEMINI_API_KEY` | — | Required (or set it from the Settings page, where it's verified before storing). |
 | `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Any Gemini-API model id. Rate limits are **per model**, so switching models is the quickest way onto a fresh free-tier quota. Gemma models work too (JSON mode is auto-disabled for them). |
 | `MAX_DRAFTS_PER_DAY` | `20` | Cost cap, enforced at draft time. |
+
+Target countries are **not** env config — set them in the UI (Run page or
+Settings); they persist in the data directory (`target_countries.json`).
 
 ## Project structure
 
@@ -178,13 +258,14 @@ backend/
     graphs/          LangGraph: run graph, draft graph, nodes, state, trace writer
     llm/             provider-agnostic LLM interface + Gemini implementation
     pipeline/        per-stage logic: resume parse, role expansion, keywords,
-                     YoE filter, extraction/classification, draft generation
+                     YoE filter, location resolution/targeting,
+                     extraction/classification, draft generation
     routers/         FastAPI endpoints: resume, keywords, runs, queue, settings
     search/          search-source abstraction + LinkedIn MCP implementation
     services/        orchestration glue: run_service, queue_service,
                      resume_service, keyword_service
     db.py            all SQL (SQLite); in-place migrations
-  tests/             pytest suite (unit + API, fake LLM — no network)
+  tests/             pytest suite (146 tests: unit + API + batch e2e, fake LLM)
 frontend/
   src/pages/         Resume, Keywords, Run (live trace), Queue, Settings
 ```
@@ -202,13 +283,44 @@ frontend/
   silent log-watching.
 - **Degraded responses**: search results that parse but look wrong are
   flagged in the trace for manual review.
+- **Schema migrations** run in place at startup (`ALTER TABLE` for columns
+  added after your database was created) — existing rows keep their data;
+  new columns fill in as new runs happen.
+
+## Troubleshooting
+
+**Browser shows an old UI after updating** — the backend serves the frontend
+bundle that was baked into the image. Rebuild (`docker compose up -d
+--build`) and hard-refresh the browser (Ctrl+Shift+R).
+
+**Search fails with "The profile appears to be in use by another Chromium
+process … on another computer"** — a stale profile lock survived a container
+restart. Clear it (safe while no search is running):
+
+```bash
+docker run --rm -v linkedin-mcp-session:/s alpine \
+  sh -c "rm -f /s/Singleton* ; ls /s | head"
+```
+
+Then re-check the session from Settings.
+
+**Location dropdown is empty / filter seems off** — the dropdown lists what
+`GET /api/settings` reports; if it lacks `location_targets`, the running
+server predates the feature (rebuild the image). Old queue rows are
+backfilled with countries the next time the queue loads.
+
+**A post stayed in the queue that's clearly not in my country** — the filter
+only drops posts whose location is *provably* outside your targets. A post
+that says "great opportunity, DM me" with no place at all is kept by design.
+Use the country filter to group it, or skip it manually.
 
 ## Status
 
-Working end-to-end: resume → keywords → search → qualify → pending leads →
-on-demand drafts → review queue. See `linkedin-outreach-agent-plan.md` for
-the design rationale and open decisions (multi-source search, hosted
-dashboard split, local-model provider).
+Working end-to-end: resume → keywords → geo-scoped search → location/YoE
+qualification → pending leads → on-demand drafts → review queue with
+posted-time sort, country filter, post permalinks, and job-detail fetching.
+See `linkedin-outreach-agent-plan.md` for the design rationale and open
+decisions (multi-source search, hosted dashboard split, local-model provider).
 
 ## Ethics & terms
 
