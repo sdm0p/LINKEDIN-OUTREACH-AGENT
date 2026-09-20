@@ -281,6 +281,65 @@ do not push to any git remote, and do not modify anything outside this
 repository.
 ```
 
+### Install from scratch with a coding agent (clone + run prompt)
+
+Use this variant on a machine that doesn't have the code yet — it clones
+the repo, brings up Docker, and explains every remaining manual step:
+
+```text
+Clone and fully set up the LinkedIn Outreach Agent for me.
+
+Do the following, in order, pausing exactly where marked:
+
+1. Clone the repository and cd into it:
+     git clone https://github.com/sdm0p/LINKEDIN-OUTREACH-AGENT.git
+     cd LINKEDIN-OUTREACH-AGENT
+2. Check prerequisites and stop with clear install instructions if any
+   are missing: Docker Desktop (daemon running), Python 3.12+, uv, Node 18+.
+3. If backend/.env does not exist, create it from backend/.env.example.
+   Then ask me for my Gemini API key (get one free at
+   https://aistudio.google.com/apikey) and write it into backend/.env as
+   GEMINI_API_KEY=<key>. Never print the key back to me and never commit it.
+4. Build and start the app:
+     docker compose up -d --build
+   Then verify http://127.0.0.1:8000/api/health returns {"ok": true} and
+   that http://localhost:8000 serves the dashboard.
+5. PAUSE and walk me through the LinkedIn login — it is interactive and
+   cannot be automated. Tell me to run:
+     docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp \
+       -p 127.0.0.1:6080:6080 \
+       stickerdaniel/linkedin-mcp-server:latest --login --login-viewer
+   ...open the printed http://127.0.0.1:6080 URL in my browser, sign in to
+   LinkedIn (complete 2FA), wait for the logged-in feed, then stop the
+   container with Ctrl+C. The session is saved in the
+   linkedin-mcp-session Docker volume and typically lasts weeks.
+6. After I confirm the login, verify it with:
+     curl -s -X POST http://127.0.0.1:8000/api/settings/linkedin/check
+   Report the result. If it is not "valid", consult the README's
+   Troubleshooting section (a stale Chromium profile lock is the usual
+   cause and the fix is documented there).
+7. Finally, explain the remaining steps I do myself in the browser at
+   http://localhost:8000:
+     - Resume page: upload my resume PDF (parsed once, cached).
+     - Keywords & roles page: generate the keyword pool; edit or pin entries.
+     - Run page: optionally pick a Location target (e.g. India) and a
+       recency window, then click "Run now" — searches are geo-scoped and
+       out-of-country / over-experienced posts are dropped automatically.
+     - Queue page: review pending leads, fetch job details where a job
+       card is attached, then click "Generate draft" per lead when I want
+       outreach text. I send every message myself outside the app and mark
+       it sent.
+   Do NOT start a LinkedIn search, generate drafts, or send anything
+   without my explicit go-ahead.
+
+Constraints: keep everything local (the app is loopback-only by design),
+do not push to any git remote, and do not modify anything outside the
+cloned repository.
+```
+
+The two prompts differ only in step 1: the first assumes the repository
+is already open in the agent; this one starts from nothing.
+
 ### Development setup
 
 #### Backend
