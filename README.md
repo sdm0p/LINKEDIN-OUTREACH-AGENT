@@ -152,7 +152,7 @@ files alongside the API). This is the easiest way to run it on any machine
 (Windows/macOS/Linux with Docker Desktop), and the recommended way to share it:
 
 ```bash
-# 1. One-time: put your key in backend/.env (see backend/.env.example)
+# 1. One-time: add your Gemini key (Settings page, or backend/.env — see Step 1 below)
 # 2. Build + run:
 docker compose up -d --build
 # 3. Open http://localhost:8000 — dashboard served by the backend itself
@@ -170,6 +170,116 @@ The one-time LinkedIn login (browser flow, port 6080) is documented at the
 bottom of `docker-compose.yml` — it creates the host volume
 `linkedin-mcp-session` that search reuses. Everything stays on the machine:
 your resume, leads, and LinkedIn session never leave it.
+
+### Step 1 — Add your Gemini API key
+
+Get a free key at https://aistudio.google.com/apikey (**Create API key**;
+keys start with `AIza`). Then choose one of:
+
+**Option A — paste it in the app (recommended)**
+
+1. Open http://localhost:8000 and go to **Settings**.
+2. Paste the key into the API-key field and save.
+3. The backend **live-verifies** the key with one tiny LLM call before
+   storing — a wrong or revoked key is rejected and never saved.
+
+The key is stored in the data directory (the `app-data` Docker volume),
+survives restarts and rebuilds, is never returned by any endpoint, and can
+be removed from the same page. An existing `GEMINI_API_KEY` in the
+environment still works as a fallback and is never modified by the app.
+
+**Option B — `backend/.env`**
+
+```bash
+cd backend
+cp .env.example .env    # then edit: GEMINI_API_KEY=AIza...
+```
+
+In a Docker deployment, restart the stack afterwards (`docker compose up -d`)
+— or just use Option A, which needs no restart at all.
+
+### Step 2 — Log in to LinkedIn (one-time, interactive)
+
+The app never handles your LinkedIn cookie directly; it delegates to the
+MCP server's own login flow. Run this **from the host** (not inside the app
+container) — it opens a remote browser viewer on loopback port 6080:
+
+```bash
+docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp \
+  -p 127.0.0.1:6080:6080 \
+  stickerdaniel/linkedin-mcp-server:latest --login --login-viewer
+```
+
+1. Open the URL the command prints — **http://127.0.0.1:6080** — in your
+   browser. A browser window running inside the container appears.
+2. Sign in to LinkedIn as usual (complete any 2FA challenge). Wait until
+   you land on your logged-in feed.
+3. The session is saved automatically into the named Docker volume
+   `linkedin-mcp-session` — stop the login container with **Ctrl+C** when
+   done. You will not need to do this again until the session expires
+   (typically weeks); if a run ever fails at the session boundary, just
+   rerun the same command.
+
+Why a named volume: Windows bind mounts break the server's
+profile-creation ACL hardening. During normal runs the server is invoked
+per run over stdio as
+`docker run -i --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp stickerdaniel/linkedin-mcp-server:latest`.
+
+### Step 3 — Verify and go
+
+- **Settings → "Check session now"** (or `POST
+  /api/settings/linkedin/check`): spawns the MCP container, makes one
+  read-only call, and reports the result. Slow by design (container
+  cold-start, up to a minute) and only ever runs on an explicit click.
+  The badge should show **valid**.
+- First-run checklist:
+  1. **Resume** — upload your PDF (parsed once, cached by file hash).
+  2. **Keywords & roles** — generate the pool, edit/pin as you like.
+  3. **Run** — pick Recency and, optionally, a Location target (e.g.
+     India), then **Run now** and watch the live trace.
+  4. **Queue** — review pending leads, then draft when ready.
+
+### Install with a coding agent (one prompt)
+
+Hand this prompt to any coding agent (Codebuff, Claude Code, Cursor,
+Copilot Workspace, …) opened at the repository root — it installs,
+configures, and verifies the whole stack, pausing only where a human is
+actually required:
+
+```text
+Set up the LinkedIn Outreach Agent in this repository and bring it fully up.
+
+Do the following, in order, and pause where marked:
+
+1. Check prerequisites and stop with clear instructions if any are
+   missing: Docker (daemon running), Python 3.12+, uv, Node 18+.
+2. If backend/.env does not exist, create it from backend/.env.example.
+   Then ask me for my Gemini API key (free at
+   https://aistudio.google.com/apikey) and write it into backend/.env as
+   GEMINI_API_KEY=<key>. Never print the key back to me or commit it.
+3. Build and start the app: docker compose up -d --build
+   Then verify http://127.0.0.1:8000/api/health returns {"ok": true}.
+4. PAUSE and tell me to complete the LinkedIn login myself — this step is
+   interactive and cannot be automated. Give me this command to run:
+     docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp \
+       -p 127.0.0.1:6080:6080 \
+       stickerdaniel/linkedin-mcp-server:latest --login --login-viewer
+   I will open the printed http://127.0.0.1:6080 URL in my browser, sign
+   in to LinkedIn, and stop the container once the session is saved.
+5. After I confirm the login, verify the session with:
+     curl -s -X POST http://127.0.0.1:8000/api/settings/linkedin/check
+   Report the result. If it is not "valid", diagnose using the README's
+   Troubleshooting section (a stale Chromium profile lock is the usual
+   cause — the fix is documented there).
+6. Finally, walk me through http://localhost:8000: upload a resume on the
+   Resume page, generate keywords, optionally set a location target on
+   the Run page. Do NOT start a LinkedIn search without my explicit
+   go-ahead, and never draft or send anything unasked.
+
+Constraints: keep everything local (the app is loopback-only by design),
+do not push to any git remote, and do not modify anything outside this
+repository.
+```
 
 ### Development setup
 
@@ -192,27 +302,8 @@ npm install
 npm run dev                 # http://localhost:5173, proxies /api to :8000
 ```
 
-### LinkedIn session (one-time)
-
-The app never handles your LinkedIn cookie directly; it delegates to the
-MCP server's own login flow:
-
-```bash
-docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp \
-  -p 127.0.0.1:6080:6080 \
-  stickerdaniel/linkedin-mcp-server:latest --login --login-viewer
-```
-
-Open the printed loopback URL and sign in. The session lives in the named
-Docker volume `linkedin-mcp-session` (Windows bind mounts break the server's
-profile-creation ACL hardening). During runs the server is invoked per run
-over stdio as
-`docker run -i --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp stickerdaniel/linkedin-mcp-server:latest`.
-
-Verify the session any time from **Settings → check LinkedIn session** (or
-`POST /api/settings/linkedin/check`): it spawns the container, calls one
-read-only tool, and reports the result. Slow by design (container cold-start)
-and only ever runs on an explicit click.
+(For the full LinkedIn login walkthrough, see **Step 2** under Getting
+started; re-login is only needed when a session expires.)
 
 ## Usage
 
