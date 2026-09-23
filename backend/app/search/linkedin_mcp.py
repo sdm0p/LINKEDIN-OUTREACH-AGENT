@@ -412,6 +412,42 @@ def _parse_post_chunk(lines: list[str], references: dict[str, str]) -> Post | No
     )
 
 
+def parse_search_payload(data: dict, keyword: str = "") -> list[Post]:
+    """Parse one search_posts JSON payload into Posts.
+
+    The single parse entry point for the MCP response shape — shared by
+    the live source, the fixture replay CLI, and the fixture parse tests,
+    so a parser fix applies everywhere at once (design §6).
+
+    Layout (live-validated): sections.search_results is one text blob with
+    every post separated by "Feed post" lines; references.search_results
+    carries person/profile mappings plus feed_post permalinks and job-card
+    references in feed order. There are no per-post ids in the text, so
+    post ids stay content-derived for dedup; permalinks and job cards are
+    matched positionally.
+    """
+    section_text = data["sections"].get("search_results") or ""
+    references = _person_references(data)
+    permalinks = _post_permalinks(data)
+    job_refs = _job_references(data)
+    posts: list[Post] = []
+    for lines in _split_feed_posts(section_text):
+        post = _parse_post_chunk(lines, references)
+        if post is not None:
+            posts.append(post)
+
+    # Positional mapping: the permalinks/job references are produced in
+    # feed order, and _split_feed_posts preserves that order. Zip what
+    # we have; a count mismatch just leaves the tail unmapped.
+    for i, post in enumerate(posts):
+        if i < len(permalinks):
+            post.post_url = permalinks[i]
+        if i < len(job_refs):
+            post.raw["job_id"] = job_refs[i]["job_id"]
+            post.raw["job_url"] = job_refs[i]["job_url"]
+    return posts
+
+
 class LinkedInMCPSource:
     name = "linkedin"
     raw_tool = raw_tool
@@ -449,18 +485,34 @@ class LinkedInMCPSource:
             return None
         return parsed if isinstance(parsed, dict) else None
 
+    def _maybe_save_fixture(
+        self, keyword: str, recency: str, raw_text: str, degraded: bool
+    ) -> None:
+        """Fixture harness (design §6): persist the raw payload when
+        SAVE_FIXTURES is enabled. Never raises, never writes when off —
+        payloads contain post content and must not leak by accident."""
+        try:
+            from ..config import settings
+            from . import fixtures
+
+            mode = settings.effective_save_fixtures()
+            if fixtures.should_save(mode, degraded):
+                fixtures.save_fixture(
+                    source="mcp",
+                    keyword=keyword,
+                    recency=recency,
+                    payload=raw_text,
+                    kind="mcp-payload",
+                )
+        except Exception:  # noqa: BLE001 — the harness must never break search
+            pass
+
     async def search_posts(self, keyword: str, recency: Recency) -> SearchResult:
         """One search_posts call.
 
-        Response schema confirmed by the live validation pass: the tool
-        returns {"url", "sections", "references"} where
-        sections.search_results is a single text blob with every post
-        separated by "Feed post" lines; references.search_results maps
-        author names to profile URLs and additionally carries feed_post
-        permalinks and job-card references in feed order. There are no
-        per-post ids in the text, so post ids stay content-derived for
-        dedup; permalinks and job cards are matched positionally.
-        """
+        Response schema confirmed by the live validation pass; the parse
+        itself lives in parse_search_payload (shared with the fixture
+        replay path)."""
         text = await self._tool_text(
             "search_posts",
             {"keywords": keyword, "date_posted": _RECENTY_MAP[recency]},
@@ -472,33 +524,18 @@ class LinkedInMCPSource:
         except json.JSONDecodeError:
             pass
 
-        if not isinstance(data, dict) or not isinstance(data.get("sections"), dict):
+        posts: list[Post] = []
+        if isinstance(data, dict) and isinstance(data.get("sections"), dict):
+            posts = parse_search_payload(data)
+            section_text = data["sections"].get("search_results") or ""
+            degraded = not posts and bool(section_text.strip())
+        else:
             # Non-JSON or unrecognizable shape — soft failure (session alive
             # but response unusable). Empty results are legitimate; garbage
             # is not, and the UI needs to tell them apart.
-            return SearchResult(posts=[], raw_hit_count=0, degraded=bool(text.strip()))
+            degraded = bool(text.strip())
 
-        section_text = data["sections"].get("search_results") or ""
-        references = _person_references(data)
-        permalinks = _post_permalinks(data)
-        job_refs = _job_references(data)
-        posts: list[Post] = []
-        for lines in _split_feed_posts(section_text):
-            post = _parse_post_chunk(lines, references)
-            if post is not None:
-                posts.append(post)
-
-        # Positional mapping: the permalinks/job references are produced in
-        # feed order, and _split_feed_posts preserves that order. Zip what
-        # we have; a count mismatch just leaves the tail unmapped.
-        for i, post in enumerate(posts):
-            if i < len(permalinks):
-                post.post_url = permalinks[i]
-            if i < len(job_refs):
-                post.raw["job_id"] = job_refs[i]["job_id"]
-                post.raw["job_url"] = job_refs[i]["job_url"]
-
-        degraded = not posts and bool(section_text.strip())
+        self._maybe_save_fixture(keyword, recency, text, degraded)
         return SearchResult(posts=posts, raw_hit_count=len(posts), degraded=degraded)
 
     async def get_job_details(self, job_id: str) -> dict[str, Any]:

@@ -1,0 +1,19 @@
+{
+ "url": "https://www.linkedin.com/search/results/content/?keywords=hiring+developer",
+ "sections": {
+  "search_results": "Feed post\n\nAravind Kumar\n\n \n • 3rd+\n\nTechnical Recruiter at Gios Technology\n\n19h • \n\nFollow\n\nWe are Hiring: Training Developer | Onsite\n📍 Location: Bangalore, India\nExperience: 2+ Years\nEmail aravind.rg@gmail.com with your CV\n\nTraining Development Specialist (Verified job)\n\nView job\n\nActively reviewing applicants\nFeed post\n\nSujal Vanpariya\n\n \n • 3rd+\n\nBusiness Development Executive at Krox\n\n3h • \n\nFollow\n\nImmediate Hiring | Java Developer | Remote (US)\nExperience:0–5 Years\nDM me\n\n42\nFeed post\n\nManoj kumar Singaravel\n\n \n • 3rd+\n\nTeam Lead | Vee Technologies\n\n2d • \n\nFollow\n\nWE'RE HIRING | .NET DEVELOPER\n📍 Location: Berlin, Germany\nminimum 9 years required. DM me.\n\n7\nFeed post\n\nReposter Rita\n\n \n • 2nd\n\nGrowth hacker\n\n1w • \n\nFollow\n\nNot hiring, just ranting about recruiters.\n\n3"
+ },
+ "references": {
+  "search_results": [
+   {"kind": "person", "url": "/in/aravind-kumar-71b418201/", "text": "Aravind Kumar", "context": "search result"},
+   {"kind": "job", "url": "/jobs/view/4464542122/", "text": "Training Development Specialist", "context": "job result"},
+   {"kind": "feed_post", "url": "/posts/aravind-kumar_gios-activity-7200000000000000000-AbCd", "context": "search_results"},
+   {"kind": "feed_post", "url": "/feed/update/urn:li:activity:7100000000000000000/", "context": "search_results"},
+   {"kind": "feed_post", "url": "/posts/manoj-kumar_vee-ugcPost-7300000000000000000-EfGh", "context": "search_results"},
+   {"kind": "feed_post", "url": "/posts/reposter-rita_share-7400000000000000000-IjKl", "context": "search_results"},
+   {"kind": "person", "url": "/in/sujal-vanpariya-6273a5321/", "text": "Sujal Vanpariya", "context": "search result"},
+   {"kind": "person", "url": "/in/manoj-kumar-931b/", "text": "Manoj kumar Singaravel", "context": "search result"},
+   {"kind": "person", "url": "/in/reposter-rita/", "text": "Reposter Rita", "context": "search result"}
+  ]
+ }
+}

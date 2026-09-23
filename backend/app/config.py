@@ -115,6 +115,20 @@ class Settings(BaseSettings):
     # different browser, different profile format.
     pw_profile_dir: Path = BASE_DIR / "data" / "linkedin-pw-profile"
 
+    # Fixture-first harness (design §6): save raw search payloads so parse
+    # logic can be iterated and regression-tested offline, at zero LinkedIn
+    # cost. "off" (default) never writes — payloads contain post content;
+    # "always" saves every search; "on-error" saves only degraded/unusable
+    # responses (the selector-rot alarm). Files land in data_dir/fixtures
+    # (gitignored — content stays on this machine), newest-30 kept.
+    save_fixtures: str = "off"
+
+    def effective_save_fixtures(self) -> str:
+        """Validated mode; unknown values fall back to off (fail-safe: a
+        typo in the env var must never start writing payloads)."""
+        value = (self.save_fixtures or "off").strip().lower()
+        return value if value in ("off", "always", "on-error") else "off"
+
     # ---------- runtime key management (Settings page) ----------
 
     def effective_gemini_api_key(self) -> str | None:
