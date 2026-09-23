@@ -64,7 +64,7 @@ def client(tmp_path, monkeypatch):
 def test_trigger_accepts_keyword_limit_all(client, monkeypatch):
     captured = {}
 
-    async def fake_start_run(recency, keyword_limit=None):
+    async def fake_start_run(recency, keyword_limit=None, keyword_ids=None):
         captured["recency"] = recency
         captured["keyword_limit"] = keyword_limit
         return "run123"
@@ -79,7 +79,7 @@ def test_trigger_accepts_keyword_limit_all(client, monkeypatch):
 def test_trigger_default_keeps_rotation(client, monkeypatch):
     captured = {}
 
-    async def fake_start_run(recency, keyword_limit=None):
+    async def fake_start_run(recency, keyword_limit=None, keyword_ids=None):
         captured["keyword_limit"] = keyword_limit
 
     monkeypatch.setattr("app.routers.runs.run_service.start_run", fake_start_run)
@@ -94,7 +94,7 @@ def test_trigger_default_keeps_rotation(client, monkeypatch):
 def test_trigger_rejects_bad_keyword_limit(client, monkeypatch):
     ran = {}
 
-    async def fake_start_run(recency, keyword_limit=None):
+    async def fake_start_run(recency, keyword_limit=None, keyword_ids=None):
         ran["called"] = True
 
     monkeypatch.setattr("app.routers.runs.run_service.start_run", fake_start_run)
@@ -115,7 +115,7 @@ def test_pick_keywords_node_honors_limit_none(monkeypatch, tmp_path):
 
     seen_limits = []
 
-    async def fake_pick(run_id, limit=KEYWORDS_PER_RUN):
+    async def fake_pick(run_id, limit=KEYWORDS_PER_RUN, keyword_ids=None):
         seen_limits.append(limit)
         return [{"id": 1, "text": "kw1", "tier": "skill"}]
 

@@ -33,6 +33,14 @@ interface RunPayload {
   error: string | null;
 }
 
+interface KeywordRow {
+  id: number;
+  text: string;
+  tier: string;
+  pinned: number | boolean;
+  active: number | boolean;
+}
+
 interface ValidationResult {
   keyword: string;
   recency: string;
@@ -92,7 +100,21 @@ export default function RunPage() {
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
   const [searchSourceSaving, setSearchSourceSaving] = useState(false);
   const [localSource, setLocalSource] = useState<string | null>(null);
+  const [pool, setPool] = useState<KeywordRow[]>([]);
+  const [pickedIds, setPickedIds] = useState<number[]>([]);
   const autoExpandedFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    api<KeywordRow[]>("/api/keywords")
+      .then((rows) => setPool(Array.isArray(rows) ? rows : []))
+      .catch(() => undefined);
+  }, []);
+
+  const toggleKeyword = (id: number) => {
+    setPickedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
 
   const poll = useCallback(async () => {
     try {
@@ -225,6 +247,9 @@ export default function RunPage() {
         body: JSON.stringify({
           recency,
           keyword_limit: allKeywords ? "all" : "default",
+          // Explicit picker selection overrides the rotation entirely
+          // (and never consumes it). Empty selection -> normal rotation.
+          ...(pickedIds.length ? { keyword_ids: pickedIds } : {}),
         }),
       });
       await poll();
@@ -234,7 +259,7 @@ export default function RunPage() {
     } finally {
       setStarting(false);
     }
-  }, [recency, allKeywords, poll, toast]);
+  }, [recency, allKeywords, pickedIds, poll, toast]);
 
   const validate = useCallback(async () => {
     setValidating(true);
@@ -363,6 +388,49 @@ export default function RunPage() {
             LinkedIn session not set up yet — runs will fail at the search
             stage until the one-time login is done (see Settings).
           </p>
+        )}
+        {pool.some((k) => k.active) && (
+          <div style={{ marginTop: 12 }}>
+            <div className="row between">
+              <span className="muted" style={{ fontSize: 13 }}>
+                Pick keywords for this run (optional — overrides rotation)
+              </span>
+              {pickedIds.length > 0 && (
+                <button className="btn small" onClick={() => setPickedIds([])}>
+                  Clear
+                </button>
+              )}
+            </div>
+            <div
+              className="chip-row"
+              style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}
+            >
+              {pool
+                .filter((k) => k.active)
+                .map((k) => {
+                  const on = pickedIds.includes(k.id);
+                  return (
+                    <button
+                      key={k.id}
+                      className={`btn small${on ? " primary" : ""}`}
+                      title={`${k.tier} keyword`}
+                      onClick={() => toggleKeyword(k.id)}
+                    >
+                      {k.text}
+                      {on ? " ✓" : ""}
+                    </button>
+                  );
+                })}
+            </div>
+            {pickedIds.length > 0 && (
+              <p className="muted" style={{ marginTop: 8 }}>
+                This run searches exactly {pickedIds.length} picked keyword
+                {pickedIds.length > 1 ? "s" : ""} — the LRU rotation is
+                untouched, so everyday coverage keeps spreading across the
+                pool.
+              </p>
+            )}
+          </div>
         )}
       </div>
 

@@ -14,6 +14,9 @@ class RunState(TypedDict, total=False):
     # How many keywords this run searches: an int subset, or None for the
     # whole active pool. JSON-safe: None survives checkpointing fine.
     keyword_limit: int | None
+    # Explicit keyword ids (Run page picker). When set it overrides the
+    # rotation entirely and the run does not stamp usage.
+    keyword_ids: list[int] | None
     # Resume/keyword stage outputs.
     resume_ok: bool
     yoe: int

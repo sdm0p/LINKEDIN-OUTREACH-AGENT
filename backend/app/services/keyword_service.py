@@ -157,9 +157,36 @@ def select_for_run(
     return ordered[:limit]
 
 
-async def pick_for_run(run_id: str, limit: int | None = KEYWORDS_PER_RUN) -> list[dict]:
+def pick_explicit(rows: list[dict], keyword_ids: list[int]) -> list[dict]:
+    """The keyword picker's selection: exactly the requested ids, in pool
+    order. Pure function so it is unit-testable.
+
+    Unknown or inactive ids are a hard error — silently narrowing a run
+    the user explicitly scoped would hide the mistake (and could make a
+    validation run search nothing at all)."""
+    by_id = {r["id"]: r for r in rows}
+    unknown = [i for i in keyword_ids if i not in by_id or not by_id[i]["active"]]
+    if unknown:
+        raise ValueError(
+            f"Unknown or inactive keyword ids: {unknown} — refresh the "
+            "keyword list and try again"
+        )
+    wanted = set(keyword_ids)
+    return [r for r in rows if r["id"] in wanted]
+
+
+async def pick_for_run(
+    run_id: str,
+    limit: int | None = KEYWORDS_PER_RUN,
+    keyword_ids: list[int] | None = None,
+) -> list[dict]:
     """Select the run's keywords and mark them used (so the next run's
-    LRU rotation actually reflects this one)."""
+    LRU rotation actually reflects this one).
+
+    keyword_ids (the Run page's picker) overrides rotation entirely: the
+    chosen keywords run in pool order, and — deliberately — they are NOT
+    marked used, so a test or targeted run never consumes the rotation
+    that keeps day-to-day coverage spread across the pool."""
     async with _db_lock:
         resume_service._ensure_db()
         conn = _conn()
@@ -172,6 +199,11 @@ async def pick_for_run(run_id: str, limit: int | None = KEYWORDS_PER_RUN) -> lis
         raise ValueError(
             "Keyword pool is empty — generate keywords on the Keywords & roles page."
         )
+
+    if keyword_ids:
+        selected = pick_explicit(rows, keyword_ids)
+        return selected  # no usage stamp: targeted runs never burn rotation
+
     selected = select_for_run(rows, limit=limit)
     if selected:
         await commit_usage([k["id"] for k in selected])

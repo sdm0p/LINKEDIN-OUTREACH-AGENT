@@ -69,7 +69,12 @@ def _summary_from_state(values: dict, pending_count: int) -> dict:
     }
 
 
-async def execute_run(run_id: str, recency: str, keyword_limit: int | None = None) -> None:
+async def execute_run(
+    run_id: str,
+    recency: str,
+    keyword_limit: int | None = None,
+    keyword_ids: list[int] | None = None,
+) -> None:
     """Drive the run graph, flushing the trace at every batch boundary.
 
     Every failure mode lands in `persist_trace`: no exception may leave a
@@ -102,6 +107,7 @@ async def execute_run(run_id: str, recency: str, keyword_limit: int | None = Non
                 "run_id": run_id,
                 "recency": recency,
                 "keyword_limit": keyword_limit,
+                "keyword_ids": keyword_ids,
                 "dlq_summary": dlq_summary,
             }
 
@@ -154,17 +160,25 @@ async def execute_run(run_id: str, recency: str, keyword_limit: int | None = Non
 
 
 async def start_run(
-    recency: str, keyword_limit: int | None = None
+    recency: str,
+    keyword_limit: int | None = None,
+    keyword_ids: list[int] | None = None,
 ) -> str:
     """Create the run row and schedule execution. Returns the run id.
 
     keyword_limit: int caps the LRU selection (the default rotation),
     None runs every active keyword in one go (the "search all" option).
-    """
+    keyword_ids: explicit Run-page picker selection — overrides the
+    rotation entirely and does not stamp usage."""
     run_id = uuid.uuid4().hex
     _seed_run(run_id, recency)
     asyncio.get_running_loop().create_task(
-        execute_run(run_id, recency, keyword_limit=keyword_limit)
+        execute_run(
+            run_id,
+            recency,
+            keyword_limit=keyword_limit,
+            keyword_ids=keyword_ids,
+        )
     )
     return run_id
 

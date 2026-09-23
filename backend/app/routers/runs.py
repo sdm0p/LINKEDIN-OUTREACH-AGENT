@@ -37,7 +37,24 @@ async def trigger(payload: dict):
             return JSONResponse(status_code=400, content={"detail": "keyword_limit must be an integer, 'all', or omitted"})
         if keyword_limit < 1:
             return JSONResponse(status_code=400, content={"detail": "keyword_limit must be >= 1"})
-    run_id = await run_service.start_run(recency, keyword_limit=keyword_limit)
+    # keyword_ids: the Run page's picker — explicit selection that overrides
+    # the rotation (and never consumes it). Empty/absent -> normal rotation.
+    raw_ids = payload.get("keyword_ids")
+    keyword_ids: list[int] | None = None
+    if raw_ids is not None:
+        if not isinstance(raw_ids, list) or not all(
+            isinstance(i, int) and not isinstance(i, bool) for i in raw_ids
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "keyword_ids must be a list of integers"},
+            )
+        keyword_ids = list(dict.fromkeys(raw_ids))  # dedupe, keep order
+        if not keyword_ids:
+            keyword_ids = None
+    run_id = await run_service.start_run(
+        recency, keyword_limit=keyword_limit, keyword_ids=keyword_ids
+    )
     return {"run_id": run_id}
 
 
