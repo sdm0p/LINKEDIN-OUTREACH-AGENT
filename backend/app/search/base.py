@@ -37,6 +37,9 @@ class SearchResult:
     posts: list[Post]
     raw_hit_count: int  # what the source reported, before dedup/filtering
     degraded: bool = False  # True when response looked empty/garbage
+    # Optional source note for the run trace (e.g. why the scroll
+    # stopped: cap reached / feed exhausted). Absent for MCP.
+    trace_note: str | None = None
 
 
 class SearchError(RuntimeError):

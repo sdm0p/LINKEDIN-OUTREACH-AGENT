@@ -208,11 +208,35 @@ def test_cli_diff_reports_changes(isolated, seed_payload, capsys):
     assert rc == 1
 
 
-def test_cli_playwright_html_reported_honestly(isolated, capsys):
+def test_cli_playwright_cards_fixture_parses(isolated, capsys):
+    """A saved playwright-cards fixture replays through the SAME card
+    parser as the live search."""
+    from app.search.playwright_source import parse_card_fixture
+
     d = isolated / "fixtures"
     d.mkdir()
-    (d / "pw_kw_24h_x.html").write_text("<html><body>feed</body></html>", encoding="utf-8")
+    fixture = {
+        "kind": "playwright-cards",
+        "cards": [
+            {
+                "text": "Recruiter Rita\nTalent Lead at Acme\n3h •\n"
+                "We are hiring a Backend Engineer for our platform team. DM me.",
+                "hrefs": [
+                    "/posts/rita_acme-activity-7200000000000000000-AbCd",
+                    "/in/rita/",
+                    "/jobs/view/1234567890/",
+                ],
+            }
+        ],
+    }
+    posts = parse_card_fixture(fixture)
+    assert len(posts) == 1
+    assert posts[0].post_url.endswith("/posts/rita_acme-activity-7200000000000000000-AbCd")
+    assert posts[0].raw.get("job_id") == "1234567890"
+
+    (d / "pw_kw_24h_x.json").write_text(json.dumps(fixture), encoding="utf-8")
     rc = pw_replay.main(["--dir", str(d)])
     out = capsys.readouterr().out
-    assert "branch item 6" in out
-    assert rc == 1
+    assert "Recruiter Rita" in out
+    assert "1 posts" in out
+    assert rc == 0

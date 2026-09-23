@@ -105,6 +105,8 @@ async def search_batch(state: RunState) -> dict:
         + (" — response degraded, needs review" if result.degraded else "")
     )
     trace.log("search", f"[{i + 1}/{len(keywords)}] '{kw['text']}': {label}")
+    if result.trace_note:
+        trace.log("search", f"[{i + 1}/{len(keywords)}] {result.trace_note}")
 
     posts = [
         {

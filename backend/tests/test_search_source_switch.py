@@ -96,11 +96,19 @@ def test_settings_endpoint_roundtrip_and_validation():
 
 
 def test_playwright_search_posts_fails_loudly_not_via_mcp(monkeypatch):
-    """A selected-but-unimplemented source must raise, never silently
-    re-route search to MCP — that would hide Playwright bugs."""
+    """A selected source must never silently re-route search to MCP — a
+    browser failure (e.g. playwright missing) raises SearchError, which
+    is the honesty contract the merge gate depends on."""
+    from app.search.base import SearchError
+
     monkeypatch.setattr("app.config.settings.search_source", "playwright")
     source = get_linkedin_source()
-    with pytest.raises(NotImplementedError):
+
+    async def no_browser(self):
+        raise SearchError("playwright is not installed (test stand-in)")
+
+    monkeypatch.setattr(type(source), "_launch_page", no_browser)
+    with pytest.raises(SearchError):
         asyncio.run(source.search_posts("hiring developer", "24h"))
 
 

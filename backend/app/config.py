@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     # different browser, different profile format.
     pw_profile_dir: Path = BASE_DIR / "data" / "linkedin-pw-profile"
 
+    # Headed by default (design §5 risk mitigations: a visible browser
+    # behaves like a person's browser; headless is the #1 automation flag).
+    # PW_HEADLESS=true flips it for servers/CI — never for live runs.
+    pw_headless: bool = False
+
     # Fixture-first harness (design §6): save raw search payloads so parse
     # logic can be iterated and regression-tested offline, at zero LinkedIn
     # cost. "off" (default) never writes — payloads contain post content;

@@ -34,11 +34,18 @@ def _load_posts(path: Path) -> tuple[list[Post], str | None]:
     except OSError as exc:
         return [], f"unreadable: {exc}"
     if path.suffix == ".html":
-        return [], "playwright HTML — parser lands with branch item 6"
+        return [], "raw HTML fixture — re-capture as playwright-cards JSON"
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         return [], f"not JSON: {exc}"
+    if isinstance(data, dict) and data.get("kind") == "playwright-cards":
+        try:
+            from .playwright_source import parse_card_fixture
+
+            return parse_card_fixture(data), None
+        except Exception as exc:  # noqa: BLE001 — CLI must always report
+            return [], f"card parse crashed: {exc}"
     if not isinstance(data, dict) or not isinstance(data.get("sections"), dict):
         return [], "payload has no sections dict (degraded capture shape)"
     try:
