@@ -113,12 +113,26 @@ for _ in range(MAX_SCROLLS):            # MAX_SCROLLS ~ 10
   Mitigations are the app's existing posture: read-only, manual runs,
   human pacing, home residential IP, headed-capable real profile with real
   history.
-- **Account choice — USER DECISION:** real account (lowest detection
-  profile; blast radius on the job-hunt identity) vs dummy account (blast
-  radius off the identity; but fresh accounts match LinkedIn's anti-abuse
-  pattern — 78M fake accounts blocked in one quarter per their 2026
-  transparency report — and need phone verification, which re-identifies).
-  Not decidable in this doc.
+- **Account choice — DECIDED (this session): DUMMY ACCOUNT.** The Playwright
+  profile logs in as a dedicated secondary account, keeping blast radius off
+  the job-hunt identity. Consequences and prerequisites, in order:
+  1. Create the dummy with a separate email + a phone number under the
+     user's control (verification will be demanded — fresh accounts are
+     LinkedIn's #1 detection target: 78M fake accounts blocked in one
+     quarter per their 2026 transparency report).
+  2. **Age it manually before any automation** (2–4 weeks minimum): photo,
+     filled profile, 20–50 connections, ordinary daily use. Automating a
+     newborn account is the exact anti-abuse pattern.
+  3. Search-only usage makes this viable: the dummy never messages, never
+     applies, never needs professional credibility — recruiters never see it.
+  4. Volume discipline matters MORE on a dummy: manual runs only, default
+     5-keyword rotation, existing pacing — no second run "because it's
+     cheap".
+  5. Fallback: if the dummy gets restricted mid-testing, the MCP source
+     (real account) remains one env-var away — testing pauses, nothing
+     breaks.
+  Meanwhile, branch items 1–3 (env switch, sanity gate, DLQ) need no
+  LinkedIn access at all and proceed in parallel with the aging window.
 - **Selector rot:** LinkedIn redesigns will break extraction. Mitigations:
   single `SELECTORS` dict, canary + degraded flag, saved-HTML debugging,
   MCP source one env-var away, weekly live validate-search habit.
@@ -157,6 +171,25 @@ lag the merge.
 **Scope call:** v1 implements `search_posts` + `check_health`;
 `search_people` (DM fallback) can initially fall back to the MCP source —
 it has no ceiling problem (single-profile lookups) and keeps v1 small.
+
+## 11. Companion feature on this branch: run-page keyword picker
+
+Requested alongside the account decision: let the user **select specific
+keywords** for a run instead of only LRU-rotation or all-keywords.
+
+- Run page: the current "Search all keywords" checkbox becomes a third
+  mode — run **selected** keywords (multi-select list from the pool;
+  pinned pre-checked), all, or default rotation.
+- API: `POST /api/runs` accepts optional `keyword_ids: list[int]`;
+  validated against the pool; empty/absent keeps today's behavior.
+- `keyword_service.pick_for_run` honors an explicit id list (order as
+  given, still marked used); run summary shows which mode ran.
+- Why it matters here: the Playwright test phase burns live sessions on a
+  dummy account — being able to run ONE known keyword, without consuming
+  the LRU rotation, is the control lever for every validation run and the
+  live merge gate itself.
+- Effort: ~3–4 h (RunPage multi-select, router param, pick_for_run ids,
+  tests). Independent of Playwright internals; builds before item 4.
 
 ## 10. Test plan
 
