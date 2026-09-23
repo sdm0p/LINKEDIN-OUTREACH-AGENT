@@ -23,8 +23,7 @@ Resume (PDF)
 [3] Keyword generation ──── ~15 search strings in two tiers (skill / title),
    │                        rotated 5 per run, least-recently-used first
    ▼
-[4] LinkedIn search ─────── per keyword, human-paced, recency-filtered,
-   │                        geo-scoped when target countries are set
+[4] LinkedIn search ─────── per keyword, human-paced, recency-filtered
    │                        (stickerdaniel/linkedin-mcp-server in Docker)
    ▼
 [5] Dedup ────────────────── posts already processed are skipped
@@ -58,20 +57,22 @@ Two hard guarantees, enforced in code rather than convention:
 
 ## Location targeting
 
-Searches on LinkedIn's post feed are global text searches, so geo-scoping is
-built at this app's layer, in three stages that mirror the YoE filter's
-philosophy (drop only on positive knowledge, never guess):
+Searches on LinkedIn's post feed are global text searches, so location
+targeting is built at this app's layer, in two stages that mirror the YoE
+filter's philosophy (drop only on positive knowledge, never guess). The
+search query itself is never augmented with the country name — LinkedIn's
+search is literal text matching, so appending "India" would hide exactly the
+city-only posts ("Bangalore", "Hyderabad", bare "Remote") that never contain
+the token:
 
-1. **Geo-scoped queries** — with target countries set, every keyword goes out
-   as `"<keyword> India"` so the results skew toward the places you want.
-2. **Pre-LLM hard drop** — a deterministic resolver
+1. **Pre-LLM hard drop** — a deterministic resolver
    (`backend/app/pipeline/location.py`) reads each post's text: labeled lines
    (`📍 Location: Bangalore, India`), city aliases (Bangalore/Bengaluru,
    Gurgaon, Dubai, London, … → country), `"hiring in Germany"`,
    `"Remote (US)"`, nationality hints (`"US only"`). If the post provably
    sits outside your targets, it's dropped before it ever costs an LLM call,
    and the run trace shows why.
-3. **Post-LLM net** — the classifier also extracts the job's country against
+2. **Post-LLM net** — the classifier also extracts the job's country against
    a closed list; any post the regexes missed but the LLM places outside the
    targets is dropped at ingest.
 
@@ -323,8 +324,8 @@ Do the following, in order, pausing exactly where marked:
      - Resume page: upload my resume PDF (parsed once, cached).
      - Keywords & roles page: generate the keyword pool; edit or pin entries.
      - Run page: optionally pick a Location target (e.g. India) and a
-       recency window, then click "Run now" — searches are geo-scoped and
-       out-of-country / over-experienced posts are dropped automatically.
+       recency window, then click "Run now" — out-of-country /
+       over-experienced posts are dropped automatically.
      - Queue page: review pending leads, fetch job details where a job
        card is attached, then click "Generate draft" per lead when I want
        outreach text. I send every message myself outside the app and mark
@@ -374,7 +375,7 @@ started; re-login is only needed when a session expires.)
    rest over roughly a week at 5 per run.
 3. **Run page** — "Run now" with a **recency filter** (24h / week / month)
    and a **location dropdown** (default "All locations" = filter off). Watch
-   the live per-stage trace: geo-scoping, per-batch search, and the
+   the live per-stage trace: per-batch search, and the
    location/YoE drop stages with reasons (e.g. `Dropped — Germany outside
    target (India)`). The summary counts both drop kinds.
 4. **Review queue** — leads land as `pending` with the source post attached.
@@ -466,7 +467,7 @@ Use the country filter to group it, or skip it manually.
 
 ## Status
 
-Working end-to-end: resume → keywords → geo-scoped search → location/YoE
+Working end-to-end: resume → keywords → search → location/YoE
 qualification → pending leads → on-demand drafts → review queue with
 posted-time sort, country filter, post permalinks, and job-detail fetching.
 See `linkedin-outreach-agent-plan.md` for the design rationale and open

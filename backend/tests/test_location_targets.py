@@ -214,3 +214,32 @@ async def test_no_targets_means_no_location_filter(tmp_path, monkeypatch):
     )
     assert counts["location_dropped"] == 0
     assert counts["leads"] == 1
+
+
+@pytest.mark.asyncio
+async def test_city_only_india_post_survives_target_filter(tmp_path, monkeypatch):
+    """Regression: a post naming only a city (no 'India' token anywhere)
+    survives the location filter with target India — city aliases resolve
+    to the country. Search-side query augmentation used to hide this bug
+    by never returning such posts from LinkedIn at all."""
+    monkeypatch.setattr("app.config.settings.data_dir", tmp_path)
+    set_target_countries(["India"])
+    provider = FakeProvider()
+    monkeypatch.setattr(queue_service, "get_llm_provider", lambda: provider)
+
+    async def _fake_people(query, trace=None):
+        return [{"name": "Recruiter Rita", "profile_url": "https://www.linkedin.com/in/rita/"}]
+
+    monkeypatch.setattr(queue_service, "_search_people_safe", _fake_people)
+
+    counts = await queue_service.ingest_posts(
+        [
+            _post("We are hiring a Fullstack Dev!\n📍 Location: Hyderabad\nDM me.", "city1"),
+            _post("Hiring in Bangalore, great team. DM me!", "city2"),
+        ],
+        "kw", "run1", _Trace(),
+    )
+    assert counts["location_dropped"] == 0
+    assert counts["leads"] == 2
+    countries = {r["post_id"]: r["country"] for r in await queue_service.list_queue()}
+    assert countries == {"city1": "India", "city2": "India"}

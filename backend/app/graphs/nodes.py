@@ -19,7 +19,6 @@ import random
 
 from langgraph.types import interrupt
 
-from ..config import get_target_countries
 from ..search.base import Post, SearchError, get_linkedin_source
 
 from ..services import keyword_service, queue_service
@@ -87,21 +86,14 @@ async def search_batch(state: RunState) -> dict:
     trace.log("search", f"[{i + 1}/{len(keywords)}] Searching: {kw['text']}")
     source = get_linkedin_source()
 
-    # Geo-scoping at the search seam: the MCP search_posts tool has no
-    # location parameter (keywords/date_posted/max_pages only), so with a
-    # single target country we bias results by appending it to the query —
-    # "hiring developer India" pulls India-heavy results. The ingest-side
-    # location filter is the actual guarantee; this just raises the hit
-    # rate. Multiple targets stay un-augmented (an OR-list query would
-    # muddy relevance); the filter alone handles that case.
-    query = kw["text"]
-    targets = get_target_countries()
-    if len(targets) == 1:
-        query = f"{kw['text']} {targets[0]}"
-        trace.log("search", f"Geo-scoped to {targets[0]}: '{query}'")
-
     try:
-        result = await source.search_posts(query, state["recency"])
+        # The keyword goes out as written. Do NOT append the target country
+        # here: LinkedIn's Posts search is literal text matching, so
+        # "hiring developer India" never returns city-only posts ("Bangalore",
+        # "Hyderabad") or bare-Remote posts that never contain the token
+        # "India". Country targeting is the ingest-side location filter's
+        # job (city aliases, pre-LLM drop, post-LLM net).
+        result = await source.search_posts(kw["text"], state["recency"])
     except SearchError as exc:
         trace.log("search", f"Search failed for '{kw['text']}': {exc}")
         raise

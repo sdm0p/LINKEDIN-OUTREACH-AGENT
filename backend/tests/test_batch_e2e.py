@@ -414,9 +414,12 @@ def test_batch_location_filter_drops_outside_targets(batch_env, monkeypatch):
         assert [d["company"] for d in queue] == ["Gios Technology"]
 
 
-def test_batch_geo_scopes_search_with_single_target(batch_env):
-    """One target country -> the search query carries it (biasing results
-    toward India-heavy posts); multiple/no targets leave queries alone."""
+def test_batch_search_queries_not_augmented_with_single_target(batch_env):
+    """Regression: a single target country must NOT be appended to the
+    search query. Augmenting ("hiring developer India") made LinkedIn's
+    literal text search skip city-only posts ("Bangalore", "Hyderabad")
+    and bare-Remote posts that never contain the token "India". Country
+    targeting is the ingest-side location filter's job, at ingest."""
     from app.config import set_target_countries
 
     seen_queries = []
@@ -431,16 +434,11 @@ def test_batch_geo_scopes_search_with_single_target(batch_env):
     original = nodes.get_linkedin_source
     nodes.get_linkedin_source = lambda: SpySource()
     try:
-        set_target_countries([])
-        with TestClient(app) as client:
-            _run_and_wait(client)
-        assert all("India" not in q for q in seen_queries)
-
-        seen_queries.clear()
         set_target_countries(["India"])
         with TestClient(app) as client:
             _run_and_wait(client)
-        assert any(q.endswith(" India") for q in seen_queries)
+        assert seen_queries
+        assert all("India" not in q for q in seen_queries)
     finally:
         nodes.get_linkedin_source = original
         set_target_countries([])
