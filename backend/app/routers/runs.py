@@ -61,6 +61,8 @@ async def validate_search(payload: dict):
     recency = str(payload.get("recency", "24h"))
     if recency not in _RECENTY_MAP:
         return JSONResponse(status_code=400, content={"detail": "recency must be 24h, week, or month"})
+    if get_linkedin_source().name != "linkedin":
+        return JSONResponse(status_code=400, content={"detail": "validation call requires the mcp source"})
     source = get_linkedin_source()
     try:
         raw = await source.raw_tool(

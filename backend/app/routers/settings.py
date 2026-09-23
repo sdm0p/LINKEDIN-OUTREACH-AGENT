@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from ..config import get_target_countries, set_target_countries, settings
 from ..llm import LLMError, provider_info
 from ..pipeline.location import selectable_target_countries
-from ..search.base import get_linkedin_source
+from ..search.base import get_linkedin_source, reset_source_registry
 from ..search.linkedin_mcp import prerequisites
 from ..services import keyword_service, queue_service, resume_service
 from ..db import get_resume_cache
@@ -56,7 +56,10 @@ async def get_settings() -> dict:
             "docker_installed": prereq["docker_installed"],
             "session_dir_present": prereq["session_dir_present"],
         },
-        "search_source": {"name": "linkedin", "available_sources": ["linkedin"]},
+        "search_source": {
+            "name": settings.effective_search_source(),
+            "available_sources": ["mcp", "playwright"],
+        },
         "drafts": {
             "max_per_day": settings.max_drafts_per_day,
             "sent_today": 0,
@@ -135,6 +138,26 @@ async def clear_llm_key() -> dict:
     to whatever GEMINI_API_KEY the environment provides."""
     settings.clear_api_key_runtime()
     return {"ok": True}
+
+
+class _SearchSourcePayload(BaseModel):
+    source: str
+
+
+@router.put("/search-source")
+async def put_search_source(payload: _SearchSourcePayload) -> dict:
+    """Switch the LinkedIn search implementation (design §3). Invalid
+    values are rejected rather than coerced, so a typo in the UI or API
+    can never silently pick a source the user did not mean."""
+    value = (payload.source or "").strip().lower()
+    if value not in ("mcp", "playwright"):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "source must be 'mcp' or 'playwright'"},
+        )
+    settings.search_source = value
+    reset_source_registry()  # next get_linkedin_source() builds the new one
+    return {"source": settings.effective_search_source()}
 
 
 @router.post("/linkedin/check")

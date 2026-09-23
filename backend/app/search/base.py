@@ -83,10 +83,33 @@ registry = SourceRegistry()
 
 
 def get_linkedin_source() -> Any:
-    """Default source (registered lazily so importing the module never
-    requires Docker to be installed)."""
-    if SOURCE_NAME not in registry.names():
+    """The linkedin seam. The implementation is picked by the SEARCH_SOURCE
+    setting:
+
+    - "mcp" (code default for now): LinkedInMCPSource — one spawned
+      container per run over stdio.
+    - "playwright": PlaywrightSource — in-process browser automation of the
+      user's own session; the destination default, flipped at the merge
+      gate's container gate (see playwright-source-design.md §3/§10).
+
+    Registered lazily so importing this module never requires Docker or
+    playwright to be installed, and cached in the registry until
+    reset_source_registry() (tests and tooling)."""
+    from ..config import settings
+
+    if SOURCE_NAME in registry.names():
+        return registry.get(SOURCE_NAME)
+    if settings.effective_search_source() == "playwright":
+        from .playwright_source import PlaywrightSource
+
+        registry.register(PlaywrightSource())
+    else:
         from .linkedin_mcp import LinkedInMCPSource
 
         registry.register(LinkedInMCPSource())
     return registry.get(SOURCE_NAME)
+
+
+def reset_source_registry() -> None:
+    """Drop cached sources (test isolation, config reload in tooling)."""
+    registry._sources.clear()

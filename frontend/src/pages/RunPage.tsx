@@ -88,6 +88,8 @@ export default function RunPage() {
   const [validating, setValidating] = useState(false);
   const [valKeyword, setValKeyword] = useState("hiring developer");
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
+  const [searchSourceSaving, setSearchSourceSaving] = useState(false);
+  const [localSource, setLocalSource] = useState<string | null>(null);
   const autoExpandedFor = useRef<string | null>(null);
 
   const poll = useCallback(async () => {
@@ -112,6 +114,36 @@ export default function RunPage() {
   }, []);
 
   const running = run?.status === "running";
+  const searchSource = settings?.search_source?.name ?? "mcp";
+  const availableSources = settings?.search_source?.available_sources ?? ["mcp"];
+  const activeSource = localSource ?? searchSource;
+
+  // Optimistic switch: flip the select immediately, roll back on failure.
+  const setSearchSource = useCallback(
+    async (value: string) => {
+      const prev = activeSource;
+      setSearchSourceSaving(true);
+      setLocalSource(value);
+      try {
+        await api("/api/settings/search-source", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source: value }),
+        });
+        toast(
+          value === "playwright"
+            ? "Search source: Playwright (direct browser automation)"
+            : "Search source: MCP container",
+        );
+      } catch (err) {
+        setLocalSource(prev);
+        toast(err instanceof ApiError ? err.message : "Could not switch source", "error");
+      } finally {
+        setSearchSourceSaving(false);
+      }
+    },
+    [activeSource, toast],
+  );
   const availableCountries = settings?.location_targets?.available ?? [];
   const targetCountries = settings?.location_targets?.countries ?? [];
 
@@ -289,6 +321,32 @@ export default function RunPage() {
               />
               <span className="muted">Search all keywords (full pool this run)</span>
             </label>
+          <div className="row">
+            <label
+              className="muted"
+              htmlFor="search-source"
+              title="Which implementation searches LinkedIn: the MCP container (mcp) or direct browser automation (playwright)."
+            >
+              Source
+            </label>
+            <select
+              id="search-source"
+              className="input"
+              value={activeSource}
+              disabled={running || searchSourceSaving}
+              onChange={(e) => void setSearchSource(e.target.value)}
+            >
+              {availableSources.map((s) => (
+                <option key={s} value={s}>
+                  {s === "playwright"
+                    ? "Playwright (browser)"
+                    : s === "mcp"
+                      ? "MCP container"
+                      : s}
+                </option>
+              ))}
+            </select>
+          </div>
           <button
             className="btn primary"
             disabled={starting || running}

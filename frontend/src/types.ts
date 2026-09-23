@@ -38,7 +38,7 @@ export interface SettingsInfo {
     docker_installed: boolean;
     session_dir_present: boolean;
   };
-  search_source?: { name: string; available_sources: string[] };
+  search_source?: { name: "mcp" | "playwright"; available_sources: string[] };
   drafts: { max_per_day: number; sent_today: number };
   retention: {
     dedup_entries: number;

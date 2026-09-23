@@ -96,6 +96,25 @@ class Settings(BaseSettings):
     # Reliability cap from the plan. Enforced when the draft stage is built.
     max_drafts_per_day: int = 20
 
+    # ---------- search source ----------
+    # Which implementation backs get_linkedin_source(): "mcp" (the
+    # stickerdaniel container, today's code default) or "playwright" (direct
+    # browser automation of the user's own session — the branch's destination
+    # default; the code default flips at the merge gate's container gate).
+    search_source: str = "mcp"
+
+    def effective_search_source(self) -> str:
+        """Validated search-source name; unknown values fall back to mcp
+        (fail-safe: the known-good path, never a half-configured one)."""
+        value = (self.search_source or "mcp").strip().lower()
+        return value if value in ("mcp", "playwright") else "mcp"
+
+    # Persistent browser profile for the Playwright session (design §4):
+    # created by the one-time pw_login flow, lives in data_dir like the
+    # other runtime state. Deliberately NOT the MCP session volume —
+    # different browser, different profile format.
+    pw_profile_dir: Path = BASE_DIR / "data" / "linkedin-pw-profile"
+
     # ---------- runtime key management (Settings page) ----------
 
     def effective_gemini_api_key(self) -> str | None:
