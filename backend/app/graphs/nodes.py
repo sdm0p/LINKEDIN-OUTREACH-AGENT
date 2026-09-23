@@ -61,8 +61,9 @@ async def pick_keywords(state: RunState) -> dict:
         "keywords": selected,
         "keyword_index": 0,
         "totals": {
-            "dedup_skipped": 0, "yoe_dropped": 0, "location_dropped": 0,
-            "noise": 0, "no_contact": 0, "leads": 0, "errors": 0,
+            "dedup_skipped": 0, "gate_dropped": 0, "yoe_dropped": 0,
+            "location_dropped": 0, "noise": 0, "no_contact": 0,
+            "leads": 0, "errors": 0,
         },
         "raw_hits": 0,
         "per_keyword": {},

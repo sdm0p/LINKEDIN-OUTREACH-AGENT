@@ -31,7 +31,7 @@ from ..db import (
     seen_post_ids,
 )
 from ..llm import LLMError, get_llm_provider
-from ..pipeline import draft_generation, extraction, location, yoe_filter
+from ..pipeline import draft_generation, extraction, location, sanity, yoe_filter
 from ..search.base import Post
 from . import resume_service
 
@@ -57,14 +57,35 @@ async def ingest_posts(posts: list[Post], keyword: str, run_id: str, trace) -> d
     """Qualify one keyword's posts into pending leads. Returns counts for
     the trace. No LLM drafting happens here."""
     provider = get_llm_provider()
-    counts = {"dedup_skipped": 0, "yoe_dropped": 0, "location_dropped": 0,
-              "noise": 0, "no_contact": 0, "leads": 0, "errors": 0}
+    counts = {"dedup_skipped": 0, "gate_dropped": 0, "yoe_dropped": 0,
+              "location_dropped": 0, "noise": 0, "no_contact": 0,
+              "leads": 0, "errors": 0}
     targets = get_target_countries()
 
     async with _db_lock:
         resume_service._ensure_db()
         state = await resume_service.get_resume_state_assuming_lock()
         my_yoe = state.my_yoe
+
+        # --- parse-sanity gate (design §7) — BEFORE dedup, so a broken
+        # extraction is never marked processed and never poisons the
+        # retry path. Gate-failed posts are skipped this run; the next
+        # run sees them again fresh, because they were never recorded
+        # as seen. This is what makes deep scrolling safe to build on.
+        gate_passed: list[Post] = []
+        for post in posts:
+            report = sanity.check_post(post)
+            if report.ok:
+                gate_passed.append(post)
+            else:
+                counts["gate_dropped"] += 1
+                trace.log(
+                    "sanity-gate",
+                    f"Unusable extraction from {post.author_name or 'unknown'} "
+                    f"({'; '.join(report.reasons)}) — NOT marked processed; "
+                    f"left for the next run",
+                )
+        posts = gate_passed
 
         conn = _conn()
         try:

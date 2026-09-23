@@ -22,6 +22,7 @@ interface RunPayload {
     raw_hits: number;
     per_keyword: Record<string, number>;
     dedup_skipped?: number;
+    gate_dropped?: number;
     yoe_dropped?: number;
     location_dropped?: number;
     noise?: number;
@@ -48,6 +49,7 @@ const STAGE_LABELS: Record<string, string> = {
   "keyword-generation": "Keywords",
   search: "Search (per keyword)",
   dedup: "Dedup",
+  "sanity-gate": "Sanity gate",
   "yoe-filter": "YoE filter",
   "location-filter": "Location filter",
   extraction: "Extraction & classification",
@@ -376,6 +378,9 @@ export default function RunPage() {
                 {run.summary.raw_hits} raw hits · {run.summary.keywords_used.length} keywords
                 {run.summary.yoe_dropped != null
                   ? ` · ${run.summary.yoe_dropped} dropped by YoE`
+                  : ""}
+                {run.summary.gate_dropped
+                  ? ` · ${run.summary.gate_dropped} failed sanity gate`
                   : ""}
                 {run.summary.location_dropped
                   ? ` · ${run.summary.location_dropped} dropped by location`
