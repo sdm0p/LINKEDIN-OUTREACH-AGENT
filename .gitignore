@@ -21,3 +21,7 @@ backend/frontend-dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local-only design docs (working notes, not for the public repo)
+playwright-source-design.md
+dlq-settings-mockup.html
