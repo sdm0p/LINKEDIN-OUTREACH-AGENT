@@ -33,22 +33,29 @@ outside `backend/app/search/` changing.
   automation of the user's own session). This is a *contract* risk, not a
   new one — see §7 for the account-level decision.
 
-## 3. Architecture: one name, two implementations
+## 3. Architecture: Playwright-primary, MCP as capability fallback
+
+**Direction (decided): the app moves to Playwright automation outright.**
+MCP is not a co-equal alternative — it is retained only for the specific
+capabilities Playwright has not implemented yet (see §8), and is fully
+removable once those are native.
 
 `get_linkedin_source()` (`search/base.py`) keeps returning a source under
 `SOURCE_NAME = "linkedin"` so **every caller stays untouched** (nodes,
 queue_service, settings, runs). The factory gains an env switch:
 
 ```
-SEARCH_SOURCE=mcp        # default, today's behavior
-SEARCH_SOURCE=playwright # new source
+SEARCH_SOURCE=playwright # the destination default (after the merge gate)
+SEARCH_SOURCE=mcp        # emergency rollback only
 ```
 
 - Import stays lazy (importing `search.base` must not require playwright).
 - `settings.search_source` in `config.py`; `routers/settings.py` already
-  exposes `search_source.{name, available_sources}` — extend the list.
-- Docker spawning code becomes irrelevant to this source: no container, no
-  docker.sock dependency for searches (the MCP source keeps it as fallback).
+  exposes `search_source.{name, available_sources}` — extend the list and
+  surface "fallback ready" (docker + MCP session volume present).
+- Until the browser runs inside the Docker image, the code default stays
+  `mcp` and Playwright is enabled via env on the branch — flipping the
+  default is part of the merge gate, not a separate decision.
 
 ## 4. Session: persistent context, one-time login
 
@@ -139,16 +146,36 @@ for _ in range(MAX_SCROLLS):            # MAX_SCROLLS ~ 10
 - **Volume discipline:** `MAX_POSTS` + bounded scrolls + existing pacing;
   nothing retries into a loop.
 
-## 8. Fallback plan
+## 8. Fallback policy — when MCP may still be used
 
-- **MCP remains the default** until the prototype proves, live, that it
-  beats 3 posts/keyword with clean extraction (that comparison is the
-  merge gate).
-- Switching is `SEARCH_SOURCE=` in `backend/.env` (or Settings later);
-  rollback is unsetting it. No data migration — both sources emit the same
-  `Post` rows into the same pipeline.
-- If a run fails at the source boundary, existing semantics hold: search
-  failures fail the run loudly; downstream fails soft per post.
+MCP is called only for capabilities Playwright does not implement, and
+never for post search. The delegation lives *inside* PlaywrightSource
+(lazily-created `LinkedInMCPSource` for delegated methods) so callers and
+the trace never see two sources.
+
+| Capability | Primary | v1 fallback (MCP) | v2 |
+|---|---|---|---|
+| `search_posts` | Playwright | **none** — a Playwright search failure fails loudly; never re-routed to MCP | — |
+| `check_health` | Playwright (its own browser) | — | — |
+| `search_people` (DM targets) | — | MCP (no ceiling problem, tiny volume) | native Playwright profile lookup |
+| `get_job_details` / `search_job_ids` (enrichment) | — | MCP (explicit per-click action only) | native Playwright job page |
+
+Rules and consequences:
+- **Search never double-routes.** Failing search → failed run (existing
+  semantics), because silently falling back would hide Playwright bugs —
+  exactly what the merge gate exists to expose.
+- **Fallback traffic runs as the REAL account** (the MCP session volume is
+  the real login). Acceptable — read-only, per-explicit-action volume —
+  but it means the dummy account's searches and the real account's DM/job
+  lookups coexist by design until v2.
+- **docker.sock stays mounted** until v2 retires MCP entirely; the "no
+  Docker dependency" win lands then, not at v1.
+- Once both v2 rows are native, `linkedin_mcp.py`, the login container,
+  the port-6080 flow, and the docker.sock mount are deleted.
+
+Rollback story: `SEARCH_SOURCE=mcp` in `backend/.env` restores today's
+behavior wholesale. No data migration — both sources emit the same `Post`
+rows into the same pipeline.
 
 ## 9. What a swap touches (and doesn't)
 
@@ -168,9 +195,10 @@ volume) or on the host (dev-mode only; simplest, but breaks the
 one-container story). Prototype can run host-side; the Docker answer can
 lag the merge.
 
-**Scope call:** v1 implements `search_posts` + `check_health`;
-`search_people` (DM fallback) can initially fall back to the MCP source —
-it has no ceiling problem (single-profile lookups) and keeps v1 small.
+**Scope call:** v1 implements `search_posts` + `check_health` natively;
+`search_people` and job-detail enrichment delegate to MCP inside the
+class (§8) — no ceiling problem there and it keeps v1 small. v2 replaces
+both delegations with native Playwright page reads and deletes MCP.
 
 ## 11. Companion feature on this branch: run-page keyword picker
 
@@ -200,3 +228,7 @@ keywords** for a run instead of only LRU-rotation or all-keywords.
 3. **Live gate (manual, one-time before merge):** one keyword via
    `/api/runs/validate-search`-style path; assert posts > 3, permalinks
    present per post, degraded=False; capture fixture while there.
+4. **Container gate (before the code default flips to playwright):** the
+   browser must work inside the Docker image (chromium deps baked in,
+   profile dir on the app-data volume) — until then `mcp` stays the code
+   default and Playwright is env-enabled on the branch.
