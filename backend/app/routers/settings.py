@@ -117,8 +117,25 @@ async def get_settings() -> dict:
     drafts_new = [d for d in all_drafts if d["status"] == "new"]
     drafts_pending = [d for d in all_drafts if d["status"] == "pending"]
     prereq = prerequisites()
+    source_name = settings.effective_search_source()
+    profile_present = settings.pw_profile_dir.exists() and any(
+        settings.pw_profile_dir.iterdir()
+    )
 
-    if not prereq["docker_installed"]:
+    if source_name == "playwright":
+        # The Playwright source has no Docker prereqs — its session lives
+        # in the persistent browser profile, not the MCP volume.
+        if not profile_present:
+            status, detail = "not_configured", (
+                "No Playwright browser profile yet — run the one-time "
+                "login: uv run python -m app.search.pw_login"
+            )
+        else:
+            status, detail = "unknown", (
+                "Playwright profile exists. Run the manual health check to "
+                "verify the session is live."
+            )
+    elif not prereq["docker_installed"]:
         status, detail = "unavailable", "Docker is not installed or not on PATH."
     elif not prereq["session_dir_present"]:
         status, detail = "not_configured", (
@@ -143,6 +160,7 @@ async def get_settings() -> dict:
             "detail": detail,
             "docker_installed": prereq["docker_installed"],
             "session_dir_present": prereq["session_dir_present"],
+            "profile_present": profile_present,
         },
         "search_source": {
             "name": settings.effective_search_source(),

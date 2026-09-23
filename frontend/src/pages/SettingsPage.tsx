@@ -485,6 +485,10 @@ export default function SettingsPage() {
   if (!info) return null;
 
   const li = info.linkedin;
+  const isPlaywright = info.search_source?.name === "playwright";
+  const sessionReady = isPlaywright
+    ? !!li.profile_present
+    : li.docker_installed && li.session_dir_present;
 
   return (
     <div>
@@ -554,9 +558,13 @@ export default function SettingsPage() {
         <div className="row" style={{ marginTop: 12 }}>
           <button
             className="btn small"
-            disabled={checking || !li.docker_installed || !li.session_dir_present}
+            disabled={checking || !sessionReady}
             onClick={() => void runHealthCheck()}
-            title="Spawns the MCP container and makes one read-only call — can take up to a minute"
+            title={
+              isPlaywright
+                ? "Opens the persistent-profile browser and verifies the feed loads logged-in"
+                : "Spawns the MCP container and makes one read-only call — can take up to a minute"
+            }
           >
             {checking ? <span className="spinner" /> : null}
             {checking ? "Checking session..." : "Check session now"}
@@ -568,10 +576,17 @@ export default function SettingsPage() {
           )}
         </div>
         {health && <p className="muted" style={{ marginTop: 8 }}>{health.detail}</p>}
-        <p className="muted" style={{ marginTop: 8 }}>
-          One-time login (opens a browser viewer on port 6080):
-          <code> docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp -p 127.0.0.1:6080:6080 stickerdaniel/linkedin-mcp-server:latest --login --login-viewer</code>
-        </p>
+        {isPlaywright ? (
+          <p className="muted" style={{ marginTop: 8 }}>
+            One-time login (opens a headed browser — you log in by hand):
+            <code> uv run python -m app.search.pw_login</code>
+          </p>
+        ) : (
+          <p className="muted" style={{ marginTop: 8 }}>
+            One-time login (opens a browser viewer on port 6080):
+            <code> docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp -p 127.0.0.1:6080:6080 stickerdaniel/linkedin-mcp-server:latest --login --login-viewer</code>
+          </p>
+        )}
       </div>
 
       <DlqCard />

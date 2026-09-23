@@ -37,6 +37,7 @@ export interface SettingsInfo {
     detail: string;
     docker_installed: boolean;
     session_dir_present: boolean;
+    profile_present?: boolean;
   };
   search_source?: { name: "mcp" | "playwright"; available_sources: string[] };
   drafts: { max_per_day: number; sent_today: number };
