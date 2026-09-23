@@ -16,6 +16,7 @@ Nothing sends. The daily cap applies at draft time, so browsing and
 qualifying leads never burns the cap — only real drafts do.
 """
 
+import json
 import re
 from datetime import UTC, datetime
 
@@ -23,6 +24,13 @@ from ..config import get_target_countries, settings
 from ..db import (
     connect,
     count_drafts_generated_on,
+    dlq_add,
+    dlq_bump,
+    dlq_delete,
+    dlq_list,
+    dlq_max_attempts,
+    dlq_purge,
+    dlq_replayable,
     get_db_path,
     insert_draft,
     record_processed_posts,
@@ -48,6 +56,51 @@ def _today() -> str:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _dlq_capture(
+    post: Post, keyword: str, run_id: str, stage: str, reason: str
+) -> None:
+    """Park a failed capture in the DLQ with its raw payload. Never throws:
+    the DLQ must not be able to break the ingest path it protects.
+
+    The payload keeps every extracted field — for the sanity gate that is
+    the raw post text as parsed, for LLM failures the full Post — so a
+    later parser fix can re-derive the lead without re-searching LinkedIn."""
+    try:
+        raw = {
+            "post_id": post.post_id,
+            "text": post.text,
+            "post_url": post.post_url,
+            "author_name": post.author_name,
+            "author_headline": post.author_headline,
+            "author_profile_url": post.author_profile_url,
+            "posted_at": post.posted_at,
+            "raw": post.raw,
+        }
+        identity = f"{post.post_id or 'noid'}|{keyword}"
+        now = _now()
+        conn = _conn()
+        try:
+            dlq_add(
+                conn,
+                {
+                    "run_id": run_id,
+                    "keyword": keyword,
+                    "stage": stage,
+                    "failure_reason": reason[:300],
+                    "author_name": post.author_name or None,
+                    "post_url": post.post_url or None,
+                    "identity": identity,
+                    "raw_json": json.dumps(raw, ensure_ascii=False),
+                    "last_attempt_at": now,
+                    "created_at": now,
+                },
+            )
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - protect-the-protector
+        pass
 
 
 # ---------- phase 1: qualify (called by the run graph, per batch) ----------
@@ -79,12 +132,15 @@ async def ingest_posts(posts: list[Post], keyword: str, run_id: str, trace) -> d
                 gate_passed.append(post)
             else:
                 counts["gate_dropped"] += 1
+                reason = "; ".join(report.reasons)
                 trace.log(
                     "sanity-gate",
                     f"Unusable extraction from {post.author_name or 'unknown'} "
-                    f"({'; '.join(report.reasons)}) — NOT marked processed; "
+                    f"({reason}) — NOT marked processed; "
                     f"left for the next run",
                 )
+                _dlq_capture(post, keyword, run_id, "sanity-gate", reason)
+
         posts = gate_passed
 
         conn = _conn()
@@ -137,13 +193,16 @@ async def ingest_posts(posts: list[Post], keyword: str, run_id: str, trace) -> d
                 classification = await extraction.classify_post(post, provider)
             except LLMError as exc:
                 # One post's failure must not sink the batch. Not marked
-                # processed, so a later run can classify it again.
+                # processed, so a later run can classify it again — and
+                # parked in the DLQ so quota/retry gaps (the 24h window
+                # moving past a post) can never silently lose it.
                 counts["errors"] += 1
                 trace.log(
                     "extraction",
                     f"Classification failed for {post.author_name or 'unknown'} — "
                     f"left for a later run ({str(exc)[:120]})",
                 )
+                _dlq_capture(post, keyword, run_id, "llm", str(exc)[:300])
                 continue
             company = classification["company"]
             role = classification["role"]
@@ -256,6 +315,89 @@ async def ingest_posts(posts: list[Post], keyword: str, run_id: str, trace) -> d
                 conn.close()
 
     return counts
+
+
+# ---------- DLQ replay (runs at the start of every run) ----------
+
+
+def _reparse_dlq_payload(payload: dict) -> Post:
+    """Rebuild a Post from a stored DLQ payload, then re-run the CURRENT
+    extraction assumptions on it — the whole point: a parser fix applies
+    to old failures without any LinkedIn calls."""
+    raw = payload.get("raw") or {}
+    return Post(
+        post_id=str(payload.get("post_id") or ""),
+        text=str(payload.get("text") or ""),
+        post_url=str(payload.get("post_url") or ""),
+        author_name=str(payload.get("author_name") or ""),
+        author_headline=str(payload.get("author_headline") or ""),
+        author_profile_url=str(payload.get("author_profile_url") or ""),
+        posted_at=str(payload.get("posted_at") or ""),
+        raw=raw if isinstance(raw, dict) else {},
+    )
+
+
+async def replay_dlq(trace) -> dict:
+    """Re-ingest every replayable DLQ entry through the normal ingest path
+    (gate -> dedup -> filters -> classify), then bump or delete the row by
+    outcome. Called at run start, BEFORE any keyword search: replay costs
+    zero LinkedIn calls, only LLM calls for entries that get that far.
+
+    Dedup stays correct by construction: DLQ entries were never marked
+    processed, and a replay that now succeeds marks the post like any
+    fresh post. A second entry for the same post under a different
+    keyword becomes a no-op dedup skip and is deleted as resolved."""
+    summary = {"replayed": 0, "recovered": 0, "still_failing": 0, "parked": 0}
+    conn = _conn()
+    try:
+        entries = dlq_replayable(conn, dlq_max_attempts())
+    finally:
+        conn.close()
+    if not entries:
+        return summary
+
+    trace.log("dlq", f"Replaying {len(entries)} failed capture(s) from the DLQ")
+    for entry in entries:
+        summary["replayed"] += 1
+        keyword = entry["keyword"] or "(dlq)"
+        try:
+            payload = json.loads(entry["raw_json"])
+            post = _reparse_dlq_payload(payload)
+            counts = await ingest_posts([post], keyword, entry["run_id"] or "dlq-replay", trace)
+        except Exception as exc:  # noqa: BLE001 — a corrupt row must not sink the run
+            conn = _conn()
+            try:
+                dlq_bump(conn, entry["id"], f"replay error: {str(exc)[:200]}")
+            finally:
+                conn.close()
+            summary["still_failing"] += 1
+            continue
+
+        resolved = (
+            counts["leads"] > 0
+            or counts["noise"] > 0
+            or counts["yoe_dropped"] > 0
+            or counts["location_dropped"] > 0
+            or counts["no_contact"] > 0
+            or counts["dedup_skipped"] > 0
+        )
+        conn = _conn()
+        try:
+            if resolved:
+                dlq_delete(conn, entry["id"])
+                summary["recovered"] += 1
+                trace.log("dlq", f"DLQ entry resolved on replay ({entry['failure_reason'][:80]})")
+            else:
+                # Gate or LLM failure again: the ingest hook's DLQ upsert
+                # already bumped attempts and refreshed the failure reason —
+                # nothing more to record here.
+                summary["still_failing"] += 1
+                if entry["attempts"] + 1 >= dlq_max_attempts():
+                    summary["parked"] += 1
+                    trace.log("dlq", "DLQ entry parked: attempts exhausted")
+        finally:
+            conn.close()
+    return summary
 
 
 def _processed_row(post: Post, keyword: str, run_id: str, company: str | None = None) -> dict:

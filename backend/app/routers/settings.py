@@ -21,6 +21,94 @@ from ..db import get_resume_cache
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
+async def _dlq_entries() -> list[dict]:
+    """DLQ rows as JSON-safe dicts for the Settings card. Parsing the raw
+    payload is the re-parse job, not the listing job — the card shows the
+    failure metadata, and "HTML" inspection decodes on demand client-side
+    from raw_json."""
+    from ..db import connect, dlq_list, dlq_max_attempts, get_db_path
+
+    conn = connect(get_db_path())
+    try:
+        rows = dlq_list(conn)
+    finally:
+        conn.close()
+    import json as _json
+
+    entries = []
+    for r in rows:
+        try:
+            raw = _json.loads(r["raw_json"])
+        except Exception:  # noqa: BLE001 — a corrupt row still lists
+            raw = {}
+        entries.append(
+            {
+                "id": r["id"],
+                "run_id": r["run_id"],
+                "keyword": r["keyword"],
+                "stage": r["stage"],
+                "failure_reason": r["failure_reason"],
+                "author_name": r["author_name"],
+                "post_url": r["post_url"],
+                "attempts": r["attempts"],
+                "last_attempt_at": r["last_attempt_at"],
+                "created_at": r["created_at"],
+                "raw_preview": str(raw.get("text") or "")[:160],
+            }
+        )
+    return entries
+
+
+@router.get("/dlq")
+async def get_dlq() -> dict:
+    """Failed captures: parked entries with reasons, for the Settings card."""
+    from ..db import DLQ_MAX_ATTEMPTS, DLQ_ROW_CAP
+
+    resume_service._ensure_db()  # fresh data_dir: create tables first
+    entries = await _dlq_entries()
+    return {
+        "entries": entries,
+        "max_attempts": DLQ_MAX_ATTEMPTS,
+        "row_cap": DLQ_ROW_CAP,
+        "parked_count": sum(1 for e in entries if e["attempts"] >= DLQ_MAX_ATTEMPTS),
+    }
+
+
+@router.post("/dlq/replay")
+async def post_dlq_replay() -> dict:
+    """Re-run every replayable DLQ entry through the current parser right
+    now (the same routine every run start performs automatically)."""
+    from ..services import queue_service
+
+    summary = await queue_service.replay_dlq(_RunTraceAdapter())
+    return summary
+
+
+class _RunTraceAdapter:
+    """Minimal trace sink for manual replay: collects lines the UI can
+    ignore, keeps replay log-free."""
+
+    def log(self, stage: str, detail: str) -> None:
+        pass
+
+
+@router.post("/dlq/purge")
+async def post_dlq_purge(payload: dict) -> dict:
+    """Manual purge — the app's nothing-purges-itself rule applies.
+    exhausted_only clears parked rows; everything clears the whole queue."""
+    from ..db import connect, dlq_purge, get_db_path
+
+    resume_service._ensure_db()
+    exhausted_only = bool(payload.get("exhausted_only", True))
+    async with queue_service._db_lock:
+        conn = connect(get_db_path())
+        try:
+            removed = dlq_purge(conn, exhausted_only)
+        finally:
+            conn.close()
+    return {"removed": removed}
+
+
 @router.get("")
 async def get_settings() -> dict:
     retention = await keyword_service.retention_stats()

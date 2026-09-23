@@ -25,6 +25,9 @@ class RunState(TypedDict, total=False):
     totals: dict
     raw_hits: int
     per_keyword: dict
+    # DLQ replay outcome from the run-start hook (replayed/recovered/
+    # still_failing/parked) — surfaced in the run summary.
+    dlq_summary: dict
     # Control.
     finished: bool
 

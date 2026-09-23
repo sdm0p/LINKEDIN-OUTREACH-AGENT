@@ -83,6 +83,21 @@ CREATE TABLE IF NOT EXISTS drafts (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS dlq (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT,
+    keyword TEXT NOT NULL DEFAULT '',
+    stage TEXT NOT NULL,
+    failure_reason TEXT NOT NULL,
+    author_name TEXT,
+    post_url TEXT,
+    identity TEXT NOT NULL UNIQUE,
+    raw_json TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 1,
+    last_attempt_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 # Created after the migration below: on a pre-feature database the base
@@ -546,3 +561,86 @@ def purge_drafts(conn: sqlite3.Connection, status: str | None = None) -> int:
         cur = conn.execute("DELETE FROM drafts")
     conn.commit()
     return cur.rowcount
+
+
+# ---------- dead-letter queue (failed captures) ----------
+# Failed captures park here with the raw post payload so a later parser
+# fix can recover them by re-parse — no re-searching, no LinkedIn calls.
+# Nothing here is ever marked processed; nothing purges automatically.
+
+DLQ_ROW_CAP = 500
+DLQ_MAX_ATTEMPTS = 5
+
+
+def dlq_add(conn: sqlite3.Connection, entry: dict) -> None:
+    """Insert a failed capture, or bump the existing row when the same
+    post fails again under the same keyword (attempts increment, the
+    newest payload wins). Evicts oldest rows beyond DLQ_ROW_CAP."""
+    conn.execute(
+        """
+        INSERT INTO dlq (run_id, keyword, stage, failure_reason, author_name,
+                         post_url, identity, raw_json, attempts,
+                         last_attempt_at, created_at)
+        VALUES (:run_id, :keyword, :stage, :failure_reason, :author_name,
+                :post_url, :identity, :raw_json, 1,
+                :last_attempt_at, :created_at)
+        ON CONFLICT(identity) DO UPDATE SET
+            attempts = attempts + 1,
+            stage = excluded.stage,
+            failure_reason = excluded.failure_reason,
+            raw_json = excluded.raw_json,
+            run_id = excluded.run_id,
+            last_attempt_at = excluded.last_attempt_at
+        """,
+        entry,
+    )
+    conn.execute(
+        "DELETE FROM dlq WHERE id NOT IN "
+        "(SELECT id FROM dlq ORDER BY created_at DESC, id DESC LIMIT ?)",
+        (DLQ_ROW_CAP,),
+    )
+    conn.commit()
+
+
+def dlq_list(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM dlq ORDER BY last_attempt_at DESC, id DESC"
+    ).fetchall()
+
+
+def dlq_replayable(conn: sqlite3.Connection, max_attempts: int) -> list[sqlite3.Row]:
+    """Entries eligible for replay: not parked by exhausted attempts."""
+    return conn.execute(
+        "SELECT * FROM dlq WHERE attempts < ? ORDER BY id ASC",
+        (max_attempts,),
+    ).fetchall()
+
+
+def dlq_bump(conn: sqlite3.Connection, entry_id: int, failure_reason: str) -> None:
+    """Record one more failed attempt on an existing row."""
+    conn.execute(
+        "UPDATE dlq SET attempts = attempts + 1, failure_reason = ?, "
+        "last_attempt_at = ? WHERE id = ?",
+        (failure_reason, utcnow(), entry_id),
+    )
+    conn.commit()
+
+
+def dlq_delete(conn: sqlite3.Connection, entry_id: int) -> bool:
+    cur = conn.execute("DELETE FROM dlq WHERE id = ?", (entry_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def dlq_purge(conn: sqlite3.Connection, exhausted_only: bool = False) -> int:
+    """Manual purge: hopeless entries (attempts exhausted) or everything."""
+    if exhausted_only:
+        cur = conn.execute("DELETE FROM dlq WHERE attempts >= ?", (DLQ_MAX_ATTEMPTS,))
+    else:
+        cur = conn.execute("DELETE FROM dlq")
+    conn.commit()
+    return cur.rowcount
+
+
+def dlq_max_attempts() -> int:
+    return DLQ_MAX_ATTEMPTS

@@ -18,6 +18,7 @@ from ..db import connect, get_db_path, get_run, latest_run, save_run
 from ..llm import LLMError
 from ..run_trace import RunTrace
 from ..search.base import SearchError
+from ..services import queue_service
 from ..graphs import build_run_graph, saver_session
 from ..graphs.trace_writer import persist_trace, register_trace, release_trace
 
@@ -56,6 +57,7 @@ def _summary_from_state(values: dict, pending_count: int) -> dict:
         "per_keyword": values.get("per_keyword", {}),
         "dedup_skipped": totals.get("dedup_skipped", 0),
         "gate_dropped": totals.get("gate_dropped", 0),
+        "dlq": values.get("dlq_summary") or {},
         "yoe_dropped": totals.get("yoe_dropped", 0),
         "location_dropped": totals.get("location_dropped", 0),
         "noise": totals.get("noise", 0),
@@ -80,10 +82,27 @@ async def execute_run(run_id: str, recency: str, keyword_limit: int | None = Non
             registered = True
             _seed_run(run_id, recency)
             config = {"configurable": {"thread_id": run_id}}
+
+            # DLQ replay first: recover yesterday's failures with today's
+            # parser before spending any LinkedIn calls (design §7).
+            try:
+                dlq_summary = await queue_service.replay_dlq(trace)
+                if dlq_summary["replayed"]:
+                    trace.log(
+                        "dlq",
+                        f"DLQ replay: {dlq_summary['recovered']} recovered, "
+                        f"{dlq_summary['still_failing']} still failing"
+                        + (f", {dlq_summary['parked']} parked" if dlq_summary["parked"] else ""),
+                    )
+            except Exception as exc:  # noqa: BLE001 — replay must not sink the run
+                dlq_summary = {"replayed": 0, "recovered": 0, "still_failing": 0, "parked": 0}
+                trace.log("dlq", f"DLQ replay failed (run continues): {str(exc)[:150]}")
+
             initial: dict = {
                 "run_id": run_id,
                 "recency": recency,
                 "keyword_limit": keyword_limit,
+                "dlq_summary": dlq_summary,
             }
 
             status = "running"

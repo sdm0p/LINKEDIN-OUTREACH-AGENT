@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type { SettingsInfo } from "../types";
 import { useToast } from "../toast";
@@ -245,6 +245,214 @@ function LocationTargetsCard() {
   );
 }
 
+interface DlqEntry {
+  id: number;
+  keyword: string;
+  stage: string;
+  failure_reason: string;
+  author_name: string | null;
+  post_url: string | null;
+  attempts: number;
+  last_attempt_at: string;
+  raw_preview: string;
+}
+
+interface DlqInfo {
+  entries: DlqEntry[];
+  max_attempts: number;
+  row_cap: number;
+  parked_count: number;
+}
+
+function DlqCard() {
+  const toast = useToast();
+  const [info, setInfo] = useState<DlqInfo | null>(null);
+  const [replaying, setReplaying] = useState(false);
+  const [purging, setPurging] = useState(false);
+  const [expanded, setExpanded] = useState<number | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setInfo(await api<DlqInfo>("/api/settings/dlq"));
+    } catch {
+      // card stays hidden if the endpoint is unreachable
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const replay = useCallback(async () => {
+    setReplaying(true);
+    try {
+      const res = await api<{
+        replayed: number;
+        recovered: number;
+        still_failing: number;
+      }>("/api/settings/dlq/replay", { method: "POST" });
+      toast(
+        `DLQ replay: ${res.recovered} recovered, ${res.still_failing} still failing`,
+      );
+      await load();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : "Replay failed", "error");
+    } finally {
+      setReplaying(false);
+    }
+  }, [load, toast]);
+
+  const purge = useCallback(
+    async (exhaustedOnly: boolean) => {
+      setPurging(false);
+      try {
+        const res = await api<{ removed: number }>("/api/settings/dlq/purge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ exhausted_only: exhaustedOnly }),
+        });
+        toast(`Purged ${res.removed} DLQ entries`);
+        await load();
+      } catch (err) {
+        toast(err instanceof ApiError ? err.message : "Purge failed", "error");
+      }
+    },
+    [load, toast],
+  );
+
+  if (!info) return null;
+
+  return (
+    <div className="card">
+      <h2 className="section-heading">Failed captures</h2>
+      <p className="muted" style={{ marginBottom: 12 }}>
+        Posts that could not be processed park here with their raw payload —
+        never marked seen, retried automatically at the start of every run,
+        and recoverable with one click after a fix. Nothing purges itself.
+      </p>
+      <div className="meta-row">
+        <div className="meta-item">
+          <span className="meta-label">Entries</span>
+          <span className="meta-value">{info.entries.length}</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Parked</span>
+          <span className="meta-value">{info.parked_count}</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Retry cap</span>
+          <span className="meta-value">{info.max_attempts} attempts</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Storage cap</span>
+          <span className="meta-value">{info.row_cap} rows</span>
+        </div>
+      </div>
+
+      {info.entries.length === 0 ? (
+        <p className="muted" style={{ marginTop: 12 }}>
+          No failed captures — the last run read every post cleanly.
+        </p>
+      ) : (
+        <>
+          <table className="data-table" style={{ marginTop: 12 }}>
+            <thead>
+              <tr>
+                <th>Keyword</th>
+                <th>Stage</th>
+                <th>Failure</th>
+                <th>Attempts</th>
+                <th>Last try</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {info.entries.map((e) => {
+                const parked = e.attempts >= info.max_attempts;
+                const open = expanded === e.id;
+                return (
+                  <Fragment key={e.id}>
+                    <tr style={parked ? { opacity: 0.55 } : undefined}>
+                      <td>{e.keyword}</td>
+                      <td>
+                        <span className="badge">{e.stage}</span>
+                      </td>
+                      <td
+                        className="muted"
+                        style={{
+                          maxWidth: 320,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={e.failure_reason}
+                      >
+                        {e.failure_reason}
+                      </td>
+                      <td className={parked ? "" : "muted"}>
+                        {e.attempts}/{info.max_attempts}
+                        {parked ? " · parked" : ""}
+                      </td>
+                      <td className="muted">
+                        {e.last_attempt_at.slice(0, 16).replace("T", " ")}
+                      </td>
+                      <td>
+                        <button
+                          className="btn small"
+                          disabled={replaying}
+                          onClick={() => setExpanded(open ? null : e.id)}
+                        >
+                          {open ? "Hide" : "Inspect"}
+                        </button>
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr>
+                        <td colSpan={6} className="muted" style={{ whiteSpace: "pre-wrap" }}>
+                          {e.raw_preview || "(no text captured)"}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="row" style={{ marginTop: 12 }}>
+            <button
+              className="btn small"
+              disabled={replaying}
+              onClick={() => void replay()}
+              title="Re-parse every entry with the current parser — no LinkedIn calls"
+            >
+              {replaying ? <span className="spinner" /> : null}
+              {replaying ? "Replaying..." : "Replay all now"}
+            </button>
+            {!purging ? (
+              <button className="btn small" onClick={() => setPurging(true)}>
+                Purge...
+              </button>
+            ) : (
+              <>
+                <span className="muted">Purge what, exactly?</span>
+                <button className="btn small" onClick={() => void purge(true)}>
+                  Exhausted entries
+                </button>
+                <button className="btn small" onClick={() => void purge(false)}>
+                  Everything
+                </button>
+                <button className="btn small" onClick={() => setPurging(false)}>
+                  Cancel
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -365,6 +573,8 @@ export default function SettingsPage() {
           <code> docker run -it --rm -v linkedin-mcp-session:/home/pwuser/.linkedin-mcp -p 127.0.0.1:6080:6080 stickerdaniel/linkedin-mcp-server:latest --login --login-viewer</code>
         </p>
       </div>
+
+      <DlqCard />
 
       <div className="card">
         <h2 className="section-heading">Draft cap</h2>
