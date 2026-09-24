@@ -120,6 +120,25 @@ def parse_posted_at(raw: str) -> str:
         return ""
 
 
+# Group-post cards embed their activity URN in a highlight link:
+# /groups/<id>/?...highlightedUpdateUrn=urn%3Ali%3Aactivity%3A<19 digits>
+# Member posts expose NO permalink in the new search DOM (the old age-
+# anchor link is gone — the age renders as plain text, verified live
+# 2026-09), so recovery is partial by design: group posts get a real
+# permalink, member posts stay empty until a v2 enrichment pass can
+# look them up on the author's activity page.
+_GROUP_URN = re.compile(r"urn(?:%3A|:)li(?:%3A|:)activity(?:%3A|:)(\d{15,})")
+
+
+def permalink_from_hrefs(hrefs: list[str]) -> str:
+    """Recover a post permalink from a card's hrefs when possible."""
+    for href in hrefs or []:
+        match = _GROUP_URN.search(href or "")
+        if match:
+            return f"https://www.linkedin.com/feed/update/urn:li:activity:{match.group(1)}/"
+    return ""
+
+
 def _clean_lines(blob: str) -> list[str]:
     cleaned: list[str] = []
     for line in (blob or "").splitlines():

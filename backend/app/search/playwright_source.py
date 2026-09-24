@@ -76,7 +76,12 @@ def _absolutize(href: str) -> str:
 
 
 def attach_links(post: Post, hrefs: list[str]) -> None:
-    """Map a card's hrefs onto the Post: permalink, author profile, job card."""
+    """Map a card's hrefs onto the Post: permalink, author profile, job card.
+
+    Permalinks come from /posts/ or /feed/update/ anchors when present,
+    else from an embedded group-highlight URN (pw_flow.permalink_from_hrefs).
+    Member posts in the new search UI carry no permalink at all — that
+    gap is documented, not a bug."""
     for href in hrefs or []:
         if not post.post_url and ("/posts/" in href or "/feed/update/" in href):
             post.post_url = _absolutize(href)
@@ -86,6 +91,8 @@ def attach_links(post: Post, hrefs: list[str]) -> None:
             match = _JOB_ID_RE.search(href)
             post.raw["job_id"] = match.group(1) if match else ""
             post.raw["job_url"] = _absolutize(href)
+    if not post.post_url:
+        post.post_url = pw_flow.permalink_from_hrefs(hrefs)
 
 
 def dedupe_blobs(blobs: list[str]) -> list[str]:
