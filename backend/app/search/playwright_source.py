@@ -30,25 +30,39 @@ from . import pw_flow
 # Selector list is ordered most-specific first; the first present wins.
 # innerText is truncated per card — a hiring post never needs more, and
 # a truncated blob is exactly what the sanity gate exists to catch.
+# Card collection WITHOUT class selectors. LinkedIn search results use
+# hashed CSS-module class names (verified live 2026-09: "b3361fd9
+# _398a5a3d") that rotate — class-based collection was exactly the
+# selector-rot trap. The stable contract is TEXT: every rendered post card
+# contains the literal marker "Feed post". We take the minimal enclosing
+# elements (no descendant also matching), so nested wrappers collapse to
+# one blob per post.
 _COLLECT_CARDS_JS = """
 () => {
-  const selectors = [
-    'div.feed-shared-update-v2',
-    'div.entity-result',
-    'ul.reusable-search__result-container li',
-  ];
-  const nodes = [];
-  for (const sel of selectors) {
-    const found = document.querySelectorAll(sel);
-    if (found.length) { nodes.push(...found); break; }
+  const MARKER = 'Feed post';
+  const candidates = [];
+  for (const el of document.querySelectorAll('div, article, li, section')) {
+    const t = el.innerText || '';
+    if (t.includes(MARKER) && t.length < 6000) candidates.push(el);
   }
-  return nodes.slice(0, 200).map((el) => ({
-    text: (el.innerText || '').slice(0, 4000),
-    hrefs: Array.from(el.querySelectorAll('a[href]'))
-      .map((a) => a.getAttribute('href'))
-      .filter(Boolean)
-      .slice(0, 25),
-  })).filter((c) => c.text.trim());
+  const set = new Set(candidates);
+  const cards = [];
+  for (const el of candidates) {
+    let minimal = true;
+    for (const d of el.querySelectorAll('*')) {
+      if (set.has(d)) { minimal = false; break; }
+    }
+    if (minimal) {
+      cards.push({
+        text: el.innerText.slice(0, 4000),
+        hrefs: Array.from(el.querySelectorAll('a[href]'))
+          .map((a) => a.getAttribute('href'))
+          .filter(Boolean)
+          .slice(0, 25),
+      });
+    }
+  }
+  return cards.slice(0, 200);
 }
 """
 
@@ -171,11 +185,33 @@ class PlaywrightSource:
 
         settings.pw_profile_dir.mkdir(parents=True, exist_ok=True)
         self._pw = await async_playwright().start()
-        self._context = await self._pw.chromium.launch_persistent_context(
-            user_data_dir=str(settings.pw_profile_dir),
-            headless=settings.pw_headless,
-            viewport={"width": 1440, "height": 900},
-        )
+        # Same channel ladder as the login CLI: reuse the profile in the
+        # SAME browser brand it was created with, so cookies and
+        # fingerprint stay consistent (a mismatched brand re-prompts).
+        self._context = None
+        last_error: Exception | None = None
+        for channel in pw_flow.CHANNEL_CANDIDATES:
+            kwargs = {
+                "user_data_dir": str(settings.pw_profile_dir),
+                "headless": settings.pw_headless,
+                "viewport": {"width": 1440, "height": 900},
+                "args": list(pw_flow.STEALTH_ARGS),
+            }
+            if channel:
+                kwargs["channel"] = channel
+            try:
+                self._context = await self._pw.chromium.launch_persistent_context(
+                    **kwargs
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 — try the next channel
+                last_error = exc
+                self._context = None
+        if self._context is None:
+            raise SearchError(
+                f"Could not launch a browser (tried chrome/msedge/chromium): "
+                f"{last_error}"
+            )
         self._page = (
             self._context.pages[0]
             if self._context.pages

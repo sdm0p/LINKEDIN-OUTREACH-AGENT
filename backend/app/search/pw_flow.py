@@ -35,8 +35,12 @@ from datetime import UTC, datetime, timedelta
 
 from .base import Post
 
-# Relative ages as LinkedIn renders them on the Posts tab.
-RELATIVE_AGE = re.compile(r"^(\d+)\s?(m|h|d|w|mo)\s?\u2022$")
+# Relative ages as LinkedIn renders them on the Posts tab. The trailing
+# bullet is optional and the line may carry an "Edited" suffix — live DOM
+# shows "8h" and "6h • Edited" (verified live 2026-09).
+RELATIVE_AGE = re.compile(
+    r"^(\d+)\s?(m|h|d|w|mo)(?:\s?\u2022)?(?:\s*\u2022?\s*Edited)?$"
+)
 _AGE_UNITS = {
     "m": "minutes",
     "h": "hours",
@@ -47,6 +51,8 @@ _AGE_UNITS = {
 SKIP_LINES = {
     "",
     "\u200b",
+    "Feed post",  # the card-separator marker itself (stripped from blobs)
+    "Join",  # connection-request button label rendered as a text line
     "Follow",
     "Following",
     "\u2026more",
@@ -243,3 +249,19 @@ def classify_browser_failure(detail: str) -> str:
     if any(m in lowered for m in markers):
         return "expired"
     return "unavailable"
+
+
+# ---------- browser fingerprint mitigations (login-time) ----------
+# A fresh Chromium under Playwright announces itself: navigator.webdriver
+# reads True and the automation infobar shows — exactly what a risk system
+# baits on for a new account, producing the captcha loop. These args strip
+# the loudest tells, and launching the real installed Chrome/Edge (channel
+# candidates, tried in order) swaps the bundled Chromium's fingerprint for
+# a mainstream one. This is not evasion of a checkpoint a human must
+# solve — it stops the browser looking like a bot BEFORE the human does
+# their part, so solving the captcha once actually sticks.
+STEALTH_ARGS = (
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
+)
+CHANNEL_CANDIDATES: tuple[str | None, ...] = ("chrome", "msedge", None)
